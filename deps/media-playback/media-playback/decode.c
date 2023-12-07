@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017 Hugh Bailey <obs.jim@gmail.com>
+ * Copyright (c) 2023 Lain Bailey <lain@obsproject.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,21 +15,19 @@
  */
 
 #include "decode.h"
+
+#include "media-playback.h"
 #include "media.h"
+#include <libavutil/mastering_display_metadata.h>
 
-#if LIBAVCODEC_VERSION_INT > AV_VERSION_INT(58, 4, 100)
-#define USE_NEW_HARDWARE_CODEC_METHOD
-#endif
-
-#ifdef USE_NEW_HARDWARE_CODEC_METHOD
 enum AVHWDeviceType hw_priority[] = {
-	AV_HWDEVICE_TYPE_D3D11VA, AV_HWDEVICE_TYPE_DXVA2,
-	AV_HWDEVICE_TYPE_VAAPI,   AV_HWDEVICE_TYPE_VDPAU,
-	AV_HWDEVICE_TYPE_QSV,     AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
-	AV_HWDEVICE_TYPE_NONE,
+	AV_HWDEVICE_TYPE_D3D11VA,      AV_HWDEVICE_TYPE_DXVA2,
+	AV_HWDEVICE_TYPE_CUDA,         AV_HWDEVICE_TYPE_VAAPI,
+	AV_HWDEVICE_TYPE_VDPAU,        AV_HWDEVICE_TYPE_QSV,
+	AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_HWDEVICE_TYPE_NONE,
 };
 
-static bool has_hw_type(AVCodec *c, enum AVHWDeviceType type,
+static bool has_hw_type(const AVCodec *c, enum AVHWDeviceType type,
 			enum AVPixelFormat *hw_format)
 {
 	for (int i = 0;; i++) {
@@ -71,14 +69,12 @@ static void init_hw_decoder(struct mp_decode *d, AVCodecContext *c)
 		d->hw = true;
 	}
 }
-#endif
 
 static int mp_open_codec(struct mp_decode *d, bool hw)
 {
 	AVCodecContext *c;
 	int ret;
 
-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 40, 101)
 	c = avcodec_alloc_context3(d->codec);
 	if (!c) {
 		blog(LOG_WARNING, "MP: Failed to allocate context");
@@ -88,16 +84,11 @@ static int mp_open_codec(struct mp_decode *d, bool hw)
 	ret = avcodec_parameters_to_context(c, d->stream->codecpar);
 	if (ret < 0)
 		goto fail;
-#else
-	c = d->stream->codec;
-#endif
 
 	d->hw = false;
 
-#ifdef USE_NEW_HARDWARE_CODEC_METHOD
 	if (hw)
 		init_hw_decoder(d, c);
-#endif
 
 	if (c->thread_count == 1 && c->codec_id != AV_CODEC_ID_PNG &&
 	    c->codec_id != AV_CODEC_ID_TIFF &&
@@ -114,11 +105,48 @@ static int mp_open_codec(struct mp_decode *d, bool hw)
 
 fail:
 	avcodec_free_context(&c);
+	avcodec_free_context(&d->decoder);
 
-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 40, 101)
-	av_free(d->decoder);
-#endif
 	return ret;
+}
+
+static uint16_t get_max_luminance(const AVStream *stream)
+{
+	uint32_t max_luminance = 0;
+
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 102)
+	for (int i = 0; i < stream->nb_side_data; i++) {
+		const AVPacketSideData *const sd = &stream->side_data[i];
+#else
+	for (int i = 0; i < stream->codecpar->nb_coded_side_data; i++) {
+		const AVPacketSideData *const sd =
+			&stream->codecpar->coded_side_data[i];
+#endif
+		switch (sd->type) {
+		case AV_PKT_DATA_MASTERING_DISPLAY_METADATA: {
+			const AVMasteringDisplayMetadata *mastering =
+				(AVMasteringDisplayMetadata *)sd->data;
+			if (mastering->has_luminance) {
+				max_luminance =
+					(uint32_t)(av_q2d(mastering
+								  ->max_luminance) +
+						   0.5);
+			}
+
+			break;
+		}
+		case AV_PKT_DATA_CONTENT_LIGHT_LEVEL: {
+			const AVContentLightMetadata *const md =
+				(AVContentLightMetadata *)&sd->data;
+			max_luminance = md->MaxCLL;
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	return max_luminance;
 }
 
 bool mp_decode_init(mp_media_t *m, enum AVMediaType type, bool hw)
@@ -136,12 +164,10 @@ bool mp_decode_init(mp_media_t *m, enum AVMediaType type, bool hw)
 	if (ret < 0)
 		return false;
 	stream = d->stream = m->fmt->streams[ret];
-
-#if LIBAVFORMAT_VERSION_INT >= AV_VERSION_INT(57, 40, 101)
 	id = stream->codecpar->codec_id;
-#else
-	id = stream->codec->codec_id;
-#endif
+
+	if (type == AVMEDIA_TYPE_VIDEO)
+		d->max_luminance = get_max_luminance(stream);
 
 	if (id == AV_CODEC_ID_VP8 || id == AV_CODEC_ID_VP9) {
 		AVDictionaryEntry *tag = NULL;
@@ -191,8 +217,14 @@ bool mp_decode_init(mp_media_t *m, enum AVMediaType type, bool hw)
 		d->in_frame = d->sw_frame;
 	}
 
+#if LIBAVCODEC_VERSION_MAJOR < 60
 	if (d->codec->capabilities & CODEC_CAP_TRUNC)
 		d->decoder->flags |= CODEC_FLAG_TRUNC;
+#endif
+
+	d->orig_pkt = av_packet_alloc();
+	d->pkt = av_packet_alloc();
+
 	return true;
 }
 
@@ -200,9 +232,9 @@ extern void mp_media_free_packet(mp_media_t *m, AVPacket *pkt);
 
 void mp_decode_clear_packets(struct mp_decode *d)
 {
-	if (d->pkt) {
-		mp_media_free_packet(d->m, d->pkt);
-		d->pkt = NULL;
+	if (d->packet_pending) {
+		av_packet_unref(d->orig_pkt);
+		d->packet_pending = false;
 	}
 
 	while (d->packets.size) {
@@ -217,6 +249,9 @@ void mp_decode_free(struct mp_decode *d)
 	mp_decode_clear_packets(d);
 	circlebuf_free(&d->packets);
 
+	av_packet_free(&d->pkt);
+	av_packet_free(&d->orig_pkt);
+
 	if (d->hw_frame) {
 		av_frame_unref(d->hw_frame);
 		av_free(d->hw_frame);
@@ -230,11 +265,9 @@ void mp_decode_free(struct mp_decode *d)
 		av_free(d->sw_frame);
 	}
 
-#ifdef USE_NEW_HARDWARE_CODEC_METHOD
 	if (d->hw_ctx) {
 		av_buffer_unref(&d->hw_ctx);
 	}
-#endif
 
 	memset(d, 0, sizeof(*d));
 }
@@ -277,9 +310,6 @@ static int decode_packet(struct mp_decode *d, int *got_frame)
 	}
 
 	if (ret != 0) {
-		if (!d->pkt)
-			return 0;
-
 		ret = avcodec_send_packet(d->decoder, d->pkt);
 		if (ret != 0 && ret != AVERROR(EAGAIN)) {
 			if (ret == AVERROR_EOF)
@@ -301,7 +331,6 @@ static int decode_packet(struct mp_decode *d, int *got_frame)
 		*got_frame = 1;
 	}
 
-#ifdef USE_NEW_HARDWARE_CODEC_METHOD
 	if (*got_frame && d->hw) {
 		if (d->hw_frame->format != d->hw_format) {
 			d->frame = d->hw_frame;
@@ -309,12 +338,17 @@ static int decode_packet(struct mp_decode *d, int *got_frame)
 		}
 
 		int err = av_hwframe_transfer_data(d->sw_frame, d->hw_frame, 0);
-		if (err != 0) {
+		if (err) {
 			ret = 0;
 			*got_frame = false;
+		} else {
+			d->sw_frame->color_range = d->hw_frame->color_range;
+			d->sw_frame->color_primaries =
+				d->hw_frame->color_primaries;
+			d->sw_frame->color_trc = d->hw_frame->color_trc;
+			d->sw_frame->colorspace = d->hw_frame->colorspace;
 		}
 	}
-#endif
 
 	d->frame = d->sw_frame;
 	return ret;
@@ -332,13 +366,20 @@ bool mp_decode_next(struct mp_decode *d)
 		return true;
 
 	while (!d->frame_ready) {
-		if (!d->pkt) {
+		if (!d->packet_pending) {
 			if (!d->packets.size) {
-				if (!eof)
+				if (eof) {
+					d->pkt->data = NULL;
+					d->pkt->size = 0;
+				} else {
 					return true;
+				}
 			} else {
-				circlebuf_pop_front(&d->packets, &d->pkt,
-						    sizeof(d->pkt));
+				mp_media_free_packet(d->m, d->orig_pkt);
+				circlebuf_pop_front(&d->packets, &d->orig_pkt,
+						    sizeof(d->orig_pkt));
+				av_packet_ref(d->pkt, d->orig_pkt);
+				d->packet_pending = true;
 			}
 		}
 
@@ -354,24 +395,26 @@ bool mp_decode_next(struct mp_decode *d)
 			     av_err2str(ret));
 #endif
 
-			if (d->pkt) {
-				mp_media_free_packet(d->m, d->pkt);
-				d->pkt = NULL;
+			if (d->packet_pending) {
+				av_packet_unref(d->orig_pkt);
+				av_packet_unref(d->pkt);
+				d->packet_pending = false;
 			}
 			return true;
 		}
 
 		d->frame_ready = !!got_frame;
 
-		if (d->pkt) {
+		if (d->packet_pending) {
 			if (d->pkt->size) {
 				d->pkt->data += ret;
 				d->pkt->size -= ret;
 			}
 
 			if (d->pkt->size <= 0) {
-				mp_media_free_packet(d->m, d->pkt);
-				d->pkt = NULL;
+				av_packet_unref(d->orig_pkt);
+				av_packet_unref(d->pkt);
+				d->packet_pending = false;
 			}
 		}
 	}
@@ -386,8 +429,11 @@ bool mp_decode_next(struct mp_decode *d)
 				av_rescale_q(d->in_frame->best_effort_timestamp,
 					     d->stream->time_base,
 					     (AVRational){1, 1000000000});
-
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 30, 100)
+		int64_t duration = d->in_frame->duration;
+#else
 		int64_t duration = d->in_frame->pkt_duration;
+#endif
 		if (!duration)
 			duration = get_estimated_duration(d, last_pts);
 		else

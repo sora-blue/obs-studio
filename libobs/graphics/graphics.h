@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -593,6 +593,11 @@ EXPORT uint8_t *gs_create_texture_file_data(const char *file,
 EXPORT uint8_t *gs_create_texture_file_data2(
 	const char *file, enum gs_image_alpha_mode alpha_mode,
 	enum gs_color_format *format, uint32_t *cx, uint32_t *cy);
+EXPORT uint8_t *
+gs_create_texture_file_data3(const char *file,
+			     enum gs_image_alpha_mode alpha_mode,
+			     enum gs_color_format *format, uint32_t *cx,
+			     uint32_t *cy, enum gs_color_space *space);
 
 #define GS_FLIP_U (1 << 0)
 #define GS_FLIP_V (1 << 1)
@@ -737,6 +742,7 @@ EXPORT void gs_end_scene(void);
 EXPORT void gs_load_swapchain(gs_swapchain_t *swapchain);
 EXPORT void gs_clear(uint32_t clear_flags, const struct vec4 *color,
 		     float depth, uint8_t stencil);
+EXPORT bool gs_is_present_ready(void);
 EXPORT void gs_present(void);
 EXPORT void gs_flush(void);
 
@@ -913,8 +919,12 @@ EXPORT void gs_duplicator_destroy(gs_duplicator_t *duplicator);
 
 EXPORT bool gs_duplicator_update_frame(gs_duplicator_t *duplicator);
 EXPORT gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator);
+EXPORT enum gs_color_space
+gs_duplicator_get_color_space(gs_duplicator_t *duplicator);
+EXPORT float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator);
 
 EXPORT uint32_t gs_get_adapter_count(void);
+EXPORT bool gs_can_adapter_fast_clear(void);
 
 /** creates a windows GDI-lockable texture */
 EXPORT gs_texture_t *gs_texture_create_gdi(uint32_t width, uint32_t height);
@@ -961,7 +971,7 @@ EXPORT gs_stagesurf_t *gs_stagesurface_create_p010(uint32_t width,
 EXPORT void gs_register_loss_callbacks(const struct gs_device_loss *callbacks);
 EXPORT void gs_unregister_loss_callbacks(void *data);
 
-#elif defined(__linux__) || defined(__FreeBSD__)
+#elif defined(__linux__) || defined(__FreeBSD__) || defined(__DragonFly__)
 
 EXPORT gs_texture_t *gs_texture_create_from_dmabuf(
 	unsigned int width, unsigned int height, uint32_t drm_format,
@@ -981,6 +991,11 @@ EXPORT bool gs_query_dmabuf_capabilities(enum gs_dmabuf_flags *dmabuf_flags,
 EXPORT bool gs_query_dmabuf_modifiers_for_format(uint32_t drm_format,
 						 uint64_t **modifiers,
 						 size_t *n_modifiers);
+
+EXPORT gs_texture_t *
+gs_texture_create_from_pixmap(uint32_t width, uint32_t height,
+			      enum gs_color_format color_format,
+			      uint32_t target, void *pixmap);
 
 #endif
 

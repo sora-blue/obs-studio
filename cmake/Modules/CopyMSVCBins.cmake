@@ -87,15 +87,13 @@ file(
   "${FFMPEG_avcodec_INCLUDE_DIR}/../bin${_bin_suffix}/libbz2*.dll"
   "${FFMPEG_avcodec_INCLUDE_DIR}/../bin${_bin_suffix}/zlib*.dll"
   "${FFMPEG_avcodec_INCLUDE_DIR}/bin${_bin_suffix}/libbz2*.dll"
-  "${FFMPEG_avcodec_INCLUDE_DIR}/bin${_bin_suffix}/zlib*.dll")
+  "${FFMPEG_avcodec_INCLUDE_DIR}/bin${_bin_suffix}/zlib*.dll"
+  "${FFMPEG_avcodec_INCLUDE_DIR}/../bin/*datachannel*.dll"
+  "${FFMPEG_avcodec_INCLUDE_DIR}/bin/*datachannel*.dll")
 
-file(
-  GLOB
-  X264_BIN_FILES
-  "${X264_INCLUDE_DIR}/../bin${_bin_suffix}/libx264-*.dll"
-  "${X264_INCLUDE_DIR}/../bin/libx264-*.dll"
-  "${X264_INCLUDE_DIR}/bin/libx264-*.dll"
-  "${X264_INCLUDE_DIR}/bin${_bin_suffix}/libx264-*.dll")
+file(GLOB X264_BIN_FILES "${X264_INCLUDE_DIR}/../bin${_bin_suffix}/libx264-*.dll"
+     "${X264_INCLUDE_DIR}/../bin/libx264-*.dll" "${X264_INCLUDE_DIR}/bin/libx264-*.dll"
+     "${X264_INCLUDE_DIR}/bin${_bin_suffix}/libx264-*.dll")
 
 file(
   GLOB
@@ -111,13 +109,9 @@ file(
   "${FREETYPE_INCLUDE_DIR_ft2build}/../bin${_bin_suffix}/freetype.dll"
   "${FREETYPE_INCLUDE_DIR_ft2build}/../bin/freetype.dll")
 
-file(
-  GLOB
-  LIBFDK_BIN_FILES
-  "${Libfdk_INCLUDE_DIR}/../bin${_bin_suffix}/libfdk*-*.dll"
-  "${Libfdk_INCLUDE_DIR}/../bin/libfdk*-*.dll"
-  "${Libfdk_INCLUDE_DIR}/bin/libfdk*-*.dll"
-  "${Libfdk_INCLUDE_DIR}/bin${_bin_suffix}/libfdk*-*.dll")
+file(GLOB LIBFDK_BIN_FILES "${Libfdk_INCLUDE_DIR}/../bin${_bin_suffix}/libfdk*-*.dll"
+     "${Libfdk_INCLUDE_DIR}/../bin/libfdk*-*.dll" "${Libfdk_INCLUDE_DIR}/bin/libfdk*-*.dll"
+     "${Libfdk_INCLUDE_DIR}/bin${_bin_suffix}/libfdk*-*.dll")
 
 file(
   GLOB
@@ -130,6 +124,10 @@ file(
   "${SSL_INCLUDE_DIR}/bin${_bin_suffix}/libeay32*.dll"
   "${SSL_INCLUDE_DIR}/bin/ssleay32*.dll"
   "${SSL_INCLUDE_DIR}/bin/libeay32*.dll")
+
+if(NOT DEFINED CURL_INCLUDE_DIR AND TARGET CURL::libcurl)
+  get_target_property(CURL_INCLUDE_DIR CURL::libcurl INTERFACE_INCLUDE_DIRECTORIES)
+endif()
 
 file(
   GLOB
@@ -161,70 +159,55 @@ endif()
 file(GLOB ZLIB_BIN_FILES "${ZLIB_BIN_PATH}/zlib*.dll")
 
 if(NOT ZLIB_BIN_FILES)
-  file(
-    GLOB
-    ZLIB_BIN_FILES
-    "${ZLIB_INCLUDE_DIR}/../bin${_bin_suffix}/zlib*.dll"
-    "${ZLIB_INCLUDE_DIR}/../bin/zlib*.dll"
-    "${ZLIB_INCLUDE_DIR}/bin${_bin_suffix}/zlib*.dll"
-    "${ZLIB_INCLUDE_DIR}/bin/zlib*.dll")
+  file(GLOB ZLIB_BIN_FILES "${ZLIB_INCLUDE_DIR}/../bin${_bin_suffix}/zlib*.dll" "${ZLIB_INCLUDE_DIR}/../bin/zlib*.dll"
+       "${ZLIB_INCLUDE_DIR}/bin${_bin_suffix}/zlib*.dll" "${ZLIB_INCLUDE_DIR}/bin/zlib*.dll")
 endif()
 
-file(GLOB RNNOISE_BIN_FILES
-     "${RNNOISE_INCLUDE_DIR}/../bin${_bin_suffix}/rnnoise*.dll"
+file(GLOB RNNOISE_BIN_FILES "${RNNOISE_INCLUDE_DIR}/../bin${_bin_suffix}/rnnoise*.dll"
      "${RNNOISE_INCLUDE_DIR}/../bin/rnnoise*.dll")
+
+set(QtCore_DIR "${Qt6Core_DIR}")
+cmake_path(SET QtCore_DIR_NORM NORMALIZE "${QtCore_DIR}/../../..")
+set(QtCore_BIN_DIR "${QtCore_DIR_NORM}bin")
+set(QtCore_PLUGIN_DIR "${QtCore_DIR_NORM}plugins")
+obs_status(STATUS "QtCore_BIN_DIR: ${QtCore_BIN_DIR}")
+obs_status(STATUS "QtCore_PLUGIN_DIR: ${QtCore_PLUGIN_DIR}")
 
 file(
   GLOB
   QT_DEBUG_BIN_FILES
-  "${Qt5Core_DIR}/../../../bin/Qt5Cored.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Guid.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Widgetsd.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5WinExtrasd.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Svgd.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Xmld.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Networkd.dll"
-  "${Qt5Core_DIR}/../../../bin/libGLESv2d.dll"
-  "${Qt5Core_DIR}/../../../bin/libEGLd.dll")
-file(GLOB QT_DEBUG_PLAT_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/platforms/qwindowsd.dll")
-file(GLOB QT_DEBUG_STYLES_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/styles/qwindowsvistastyled.dll")
-file(GLOB QT_DEBUG_ICONENGINE_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/iconengines/qsvgicond.dll")
-file(
-  GLOB
-  QT_DEBUG_IMAGEFORMATS_BIN_FILES
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qsvgd.dll"
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qgifd.dll"
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qjpegd.dll")
+  "${QtCore_BIN_DIR}/Qt6Cored.dll"
+  "${QtCore_BIN_DIR}/Qt6Guid.dll"
+  "${QtCore_BIN_DIR}/Qt6Widgetsd.dll"
+  "${QtCore_BIN_DIR}/Qt6Svgd.dll"
+  "${QtCore_BIN_DIR}/Qt6Xmld.dll"
+  "${QtCore_BIN_DIR}/Qt6Networkd.dll"
+  "${QtCore_BIN_DIR}/libGLESv2d.dll"
+  "${QtCore_BIN_DIR}/libEGLd.dll")
+file(GLOB QT_DEBUG_PLAT_BIN_FILES "${QtCore_PLUGIN_DIR}/platforms/qwindowsd.dll")
+file(GLOB QT_DEBUG_STYLES_BIN_FILES "${QtCore_PLUGIN_DIR}/styles/qwindowsvistastyled.dll")
+file(GLOB QT_DEBUG_ICONENGINE_BIN_FILES "${QtCore_PLUGIN_DIR}/iconengines/qsvgicond.dll")
+file(GLOB QT_DEBUG_IMAGEFORMATS_BIN_FILES "${QtCore_PLUGIN_DIR}/imageformats/qsvgd.dll"
+     "${QtCore_PLUGIN_DIR}/imageformats/qgifd.dll" "${QtCore_PLUGIN_DIR}/imageformats/qjpegd.dll")
 
 file(
   GLOB
   QT_BIN_FILES
-  "${Qt5Core_DIR}/../../../bin/Qt5Core.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Gui.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Widgets.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5WinExtras.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Svg.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Xml.dll"
-  "${Qt5Core_DIR}/../../../bin/Qt5Network.dll"
-  "${Qt5Core_DIR}/../../../bin/libGLESv2.dll"
-  "${Qt5Core_DIR}/../../../bin/libEGL.dll")
-file(GLOB QT_PLAT_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/platforms/qwindows.dll")
-file(GLOB QT_STYLES_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/styles/qwindowsvistastyle.dll")
-file(GLOB QT_ICONENGINE_BIN_FILES
-     "${Qt5Core_DIR}/../../../plugins/iconengines/qsvgicon.dll")
-file(
-  GLOB
-  QT_IMAGEFORMATS_BIN_FILES
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qsvg.dll"
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qgif.dll"
-  "${Qt5Core_DIR}/../../../plugins/imageformats/qjpeg.dll")
+  "${QtCore_BIN_DIR}/Qt6Core.dll"
+  "${QtCore_BIN_DIR}/Qt6Gui.dll"
+  "${QtCore_BIN_DIR}/Qt6Widgets.dll"
+  "${QtCore_BIN_DIR}/Qt6Svg.dll"
+  "${QtCore_BIN_DIR}/Qt6Xml.dll"
+  "${QtCore_BIN_DIR}/Qt6Network.dll"
+  "${QtCore_BIN_DIR}/libGLESv2.dll"
+  "${QtCore_BIN_DIR}/libEGL.dll")
+file(GLOB QT_PLAT_BIN_FILES "${QtCore_PLUGIN_DIR}/platforms/qwindows.dll")
+file(GLOB QT_STYLES_BIN_FILES "${QtCore_PLUGIN_DIR}/styles/qwindowsvistastyle.dll")
+file(GLOB QT_ICONENGINE_BIN_FILES "${QtCore_PLUGIN_DIR}/iconengines/qsvgicon.dll")
+file(GLOB QT_IMAGEFORMATS_BIN_FILES "${QtCore_PLUGIN_DIR}/imageformats/qsvg.dll"
+     "${QtCore_PLUGIN_DIR}/imageformats/qgif.dll" "${QtCore_PLUGIN_DIR}/imageformats/qjpeg.dll")
 
-file(GLOB QT_ICU_BIN_FILES "${Qt5Core_DIR}/../../../bin/icu*.dll")
+file(GLOB QT_ICU_BIN_FILES "${QtCore_BIN_DIR}/icu*.dll")
 
 set(ALL_BASE_BIN_FILES
     ${FFMPEG_BIN_FILES}
@@ -289,180 +272,93 @@ obs_status(STATUS "curl files: ${CURL_BIN_FILES}")
 obs_status(STATUS "lua files: ${LUA_BIN_FILES}")
 obs_status(STATUS "ssl files: ${SSL_BIN_FILES}")
 obs_status(STATUS "zlib files: ${ZLIB_BIN_FILES}")
-obs_status(STATUS "QT Debug files: ${QT_DEBUG_BIN_FILES}")
-obs_status(STATUS "QT Debug Platform files: ${QT_DEBUG_PLAT_BIN_FILES}")
-obs_status(STATUS "QT Debug Styles files: ${QT_DEBUG_STYLES_BIN_FILES}")
-obs_status(STATUS "QT Debug Iconengine files: ${QT_DEBUG_ICONENGINE_BIN_FILES}")
-obs_status(STATUS
-           "QT Debug Imageformat files: ${QT_DEBUG_IMAGEFORMATS_BIN_FILES}")
-obs_status(STATUS "QT Release files: ${QT_BIN_FILES}")
-obs_status(STATUS "QT Release Platform files: ${QT_PLAT_BIN_FILES}")
-obs_status(STATUS "QT Release Styles files: ${QT_STYLES_BIN_FILES}")
-obs_status(STATUS "QT Release Iconengine files: ${QT_ICONENGINE_BIN_FILES}")
-obs_status(STATUS "QT Release Imageformat files: ${QT_IMAGEFORMATS_BIN_FILES}")
-obs_status(STATUS "QT ICU files: ${QT_ICU_BIN_FILES}")
+obs_status(STATUS "Qt Debug files: ${QT_DEBUG_BIN_FILES}")
+obs_status(STATUS "Qt Debug Platform files: ${QT_DEBUG_PLAT_BIN_FILES}")
+obs_status(STATUS "Qt Debug Styles files: ${QT_DEBUG_STYLES_BIN_FILES}")
+obs_status(STATUS "Qt Debug Iconengine files: ${QT_DEBUG_ICONENGINE_BIN_FILES}")
+obs_status(STATUS "Qt Debug Imageformat files: ${QT_DEBUG_IMAGEFORMATS_BIN_FILES}")
+obs_status(STATUS "Qt Release files: ${QT_BIN_FILES}")
+obs_status(STATUS "Qt Release Platform files: ${QT_PLAT_BIN_FILES}")
+obs_status(STATUS "Qt Release Styles files: ${QT_STYLES_BIN_FILES}")
+obs_status(STATUS "Qt Release Iconengine files: ${QT_ICONENGINE_BIN_FILES}")
+obs_status(STATUS "Qt Release Imageformat files: ${QT_IMAGEFORMATS_BIN_FILES}")
+obs_status(STATUS "Qt ICU files: ${QT_ICU_BIN_FILES}")
 
 foreach(BinFile ${ALL_BASE_BIN_FILES})
-  obs_status(
-    STATUS
-    "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/")
+  obs_status(STATUS "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/")
 endforeach()
 
 foreach(BinFile ${ALL_REL_BIN_FILES})
-  obs_status(
-    STATUS
-    "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/")
+  obs_status(STATUS "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/")
 endforeach()
 
 foreach(BinFile ${ALL_DBG_BIN_FILES})
-  obs_status(
-    STATUS
-    "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/")
+  obs_status(STATUS "copying ${BinFile} to ${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/")
 endforeach()
 
 foreach(BinFile ${ALL_PLATFORM_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/platforms")
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/platforms/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/platforms")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/platforms/")
 endforeach()
 
 foreach(BinFile ${ALL_PLATFORM_REL_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/platforms"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/platforms/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/platforms")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/platforms/")
 endforeach()
 
 foreach(BinFile ${ALL_PLATFORM_DBG_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/platforms"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/platforms/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/platforms")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/platforms/")
 endforeach()
 
 foreach(BinFile ${ALL_STYLES_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/styles")
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/styles/")
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/styles")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/styles/")
 endforeach()
 
 foreach(BinFile ${ALL_STYLES_REL_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/styles")
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/styles/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/styles")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/styles/")
 endforeach()
 
 foreach(BinFile ${ALL_STYLES_DBG_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/styles")
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/styles/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/styles")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/styles/")
 endforeach()
 
 foreach(BinFile ${ALL_ICONENGINE_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/iconengines"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/iconengines/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/iconengines")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/iconengines/")
 endforeach()
 
 foreach(BinFile ${ALL_ICONENGINE_REL_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/iconengines"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/iconengines/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/iconengines")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/iconengines/")
 endforeach()
 
 foreach(BinFile ${ALL_ICONENGINE_DBG_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/iconengines"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/iconengines/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/iconengines")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/iconengines/")
 endforeach()
 
 foreach(BinFile ${ALL_IMAGEFORMATS_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/imageformats"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/imageformats/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/imageformats")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}/imageformats/")
 endforeach()
 
 foreach(BinFile ${ALL_IMAGEFORMATS_REL_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/imageformats"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/imageformats/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/imageformats")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}r/imageformats/")
 endforeach()
 
 foreach(BinFile ${ALL_IMAGEFORMATS_DBG_BIN_FILES})
-  make_directory(
-    "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/imageformats"
-  )
-  file(
-    COPY "${BinFile}"
-    DESTINATION
-      "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/imageformats/"
-  )
+  make_directory("${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/imageformats")
+  file(COPY "${BinFile}" DESTINATION "${CMAKE_SOURCE_DIR}/additional_install_files/exec${_bin_suffix}d/imageformats/")
 endforeach()
 
 set(COPIED_DEPENDENCIES
     TRUE
-    CACHE BOOL "Dependencies have been copied, set to false to copy again"
-          FORCE)
+    CACHE BOOL "Dependencies have been copied, set to false to copy again" FORCE)

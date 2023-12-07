@@ -5,7 +5,11 @@
 #pragma warning(disable : 4152)
 #endif
 
+#ifdef OBS_LEGACY
 #include "../graphics-hook-info.h"
+#else
+#include <graphics-hook-info.h>
+#endif
 #include <ipc-util/pipe.h>
 #include <psapi.h>
 
@@ -246,6 +250,19 @@ static inline bool capture_should_init(void)
 	}
 
 	return should_init;
+}
+
+#if COMPILE_VULKAN_HOOK
+extern __declspec(thread) int vk_presenting;
+#endif
+
+static inline bool should_passthrough()
+{
+#if COMPILE_VULKAN_HOOK
+	return vk_presenting > 0;
+#else
+	return false;
+#endif
 }
 
 #ifdef __cplusplus

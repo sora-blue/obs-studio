@@ -3,7 +3,6 @@
 #include <obs.hpp>
 #include <QWidget>
 #include <QPaintEvent>
-#include <QSharedPointer>
 #include <QTimer>
 #include <QMutex>
 #include <QList>
@@ -94,13 +93,10 @@ class VolumeMeter : public QWidget {
 
 	friend class VolControl;
 
-private slots:
-	void ClipEnding();
-
 private:
 	obs_volmeter_t *obs_volmeter;
-	static QWeakPointer<VolumeMeterTimer> updateTimer;
-	QSharedPointer<VolumeMeterTimer> updateTimerRef;
+	static std::weak_ptr<VolumeMeterTimer> updateTimer;
+	std::shared_ptr<VolumeMeterTimer> updateTimerRef;
 
 	inline void resetLevels();
 	inline void doLayout();
@@ -110,6 +106,7 @@ private:
 	inline void calculateBallisticsForChannel(int channelNr, uint64_t ts,
 						  qreal timeSinceLastRedraw);
 
+	inline int convertToInt(float number);
 	void paintInputMeter(QPainter &painter, int x, int y, int width,
 			     int height, float peakHold);
 	void paintHMeter(QPainter &painter, int x, int y, int width, int height,
@@ -167,6 +164,13 @@ private:
 	qreal magnitudeIntegrationTime;
 	qreal peakHoldDuration;
 	qreal inputPeakHoldDuration;
+
+	QColor p_backgroundNominalColor;
+	QColor p_backgroundWarningColor;
+	QColor p_backgroundErrorColor;
+	QColor p_foregroundNominalColor;
+	QColor p_foregroundWarningColor;
+	QColor p_foregroundErrorColor;
 
 	uint64_t lastRedrawTime = 0;
 	int channels = 0;
@@ -282,8 +286,8 @@ private:
 	QPushButton *config = nullptr;
 	float levelTotal;
 	float levelCount;
-	obs_fader_t *obs_fader;
-	obs_volmeter_t *obs_volmeter;
+	OBSFader obs_fader;
+	OBSVolMeter obs_volmeter;
 	bool vertical;
 	QMenu *contextMenu;
 
@@ -293,12 +297,14 @@ private:
 				   const float peak[MAX_AUDIO_CHANNELS],
 				   const float inputPeak[MAX_AUDIO_CHANNELS]);
 	static void OBSVolumeMuted(void *data, calldata_t *calldata);
+	static void OBSMixersOrMonitoringChanged(void *data, calldata_t *);
 
 	void EmitConfigClicked();
 
 private slots:
 	void VolumeChanged();
 	void VolumeMuted(bool muted);
+	void MixersOrMonitoringChanged();
 
 	void SetMuted(bool checked);
 	void SliderChanged(int vol);
@@ -322,4 +328,6 @@ public:
 
 	void EnableSlider(bool enable);
 	inline void SetContextMenu(QMenu *cm) { contextMenu = cm; }
+
+	void refreshColors();
 };

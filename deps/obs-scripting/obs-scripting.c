@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2017 by Hugh Bailey <jim@obsproject.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -23,7 +23,6 @@
 
 #include "obs-scripting-internal.h"
 #include "obs-scripting-callback.h"
-#include "obs-scripting-config.h"
 
 #if defined(LUAJIT_FOUND)
 extern obs_script_t *obs_lua_script_create(const char *path,
@@ -85,6 +84,7 @@ struct defer_call {
 static void *defer_thread(void *unused)
 {
 	UNUSED_PARAMETER(unused);
+	os_set_thread_name("scripting: defer");
 
 	while (os_sem_wait(defer_call_semaphore) == 0) {
 		struct defer_call info;
@@ -456,5 +456,11 @@ bool obs_scripting_python_loaded(void)
 bool obs_scripting_python_runtime_linked(void)
 {
 	return (bool)true;
+}
+
+void obs_scripting_python_version(char *version, size_t version_length)
+{
+	UNUSED_PARAMETER(version_length);
+	version[0] = 0;
 }
 #endif

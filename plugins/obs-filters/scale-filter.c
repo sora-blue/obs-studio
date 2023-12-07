@@ -281,16 +281,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 	switch (source_space) {
 	case GS_CS_SRGB:
 	case GS_CS_SRGB_16F:
-		switch (current_space) {
-		case GS_CS_709_SCRGB:
-			*multiplier = obs_get_video_sdr_white_level() / 80.f;
-		}
-		break;
 	case GS_CS_709_EXTENDED:
-		switch (current_space) {
-		case GS_CS_709_SCRGB:
+		if (current_space == GS_CS_709_SCRGB)
 			*multiplier = obs_get_video_sdr_white_level() / 80.f;
-		}
 		break;
 	case GS_CS_709_SCRGB:
 		switch (current_space) {
@@ -298,6 +291,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 		case GS_CS_SRGB_16F:
 		case GS_CS_709_EXTENDED:
 			*multiplier = 80.f / obs_get_video_sdr_white_level();
+			break;
+		case GS_CS_709_SCRGB:
+			break;
 		}
 	}
 
@@ -307,10 +303,8 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 		switch (source_space) {
 		case GS_CS_SRGB:
 		case GS_CS_SRGB_16F:
-			switch (current_space) {
-			case GS_CS_709_SCRGB:
+			if (current_space == GS_CS_709_SCRGB)
 				tech_name = "DrawUndistortMultiply";
-			}
 			break;
 		case GS_CS_709_EXTENDED:
 			switch (current_space) {
@@ -320,6 +314,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_SCRGB:
 				tech_name = "DrawUndistortMultiply";
+				break;
+			case GS_CS_709_EXTENDED:
+				break;
 			}
 			break;
 		case GS_CS_709_SCRGB:
@@ -330,6 +327,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_EXTENDED:
 				tech_name = "DrawUndistortMultiply";
+				break;
+			case GS_CS_709_SCRGB:
+				break;
 			}
 		}
 	} else if (filter->upscale) {
@@ -337,10 +337,8 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 		switch (source_space) {
 		case GS_CS_SRGB:
 		case GS_CS_SRGB_16F:
-			switch (current_space) {
-			case GS_CS_709_SCRGB:
+			if (current_space == GS_CS_709_SCRGB)
 				tech_name = "DrawUpscaleMultiply";
-			}
 			break;
 		case GS_CS_709_EXTENDED:
 			switch (current_space) {
@@ -350,6 +348,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_SCRGB:
 				tech_name = "DrawUpscaleMultiply";
+				break;
+			case GS_CS_709_EXTENDED:
+				break;
 			}
 			break;
 		case GS_CS_709_SCRGB:
@@ -360,16 +361,17 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_EXTENDED:
 				tech_name = "DrawUpscaleMultiply";
+				break;
+			case GS_CS_709_SCRGB:
+				break;
 			}
 		}
 	} else {
 		switch (source_space) {
 		case GS_CS_SRGB:
 		case GS_CS_SRGB_16F:
-			switch (current_space) {
-			case GS_CS_709_SCRGB:
+			if (current_space == GS_CS_709_SCRGB)
 				tech_name = "DrawMultiply";
-			}
 			break;
 		case GS_CS_709_EXTENDED:
 			switch (current_space) {
@@ -379,6 +381,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_SCRGB:
 				tech_name = "DrawMultiply";
+				break;
+			case GS_CS_709_EXTENDED:
+				break;
 			}
 			break;
 		case GS_CS_709_SCRGB:
@@ -389,6 +394,9 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 				break;
 			case GS_CS_709_EXTENDED:
 				tech_name = "DrawMultiply";
+				break;
+			case GS_CS_709_SCRGB:
+				break;
 			}
 		}
 	}
@@ -398,9 +406,14 @@ get_tech_name_and_multiplier(const struct scale_filter_data *filter,
 
 static void scale_filter_render(void *data, gs_effect_t *effect)
 {
+	UNUSED_PARAMETER(effect);
+
 	struct scale_filter_data *filter = data;
 
-	const enum gs_color_space current_space = gs_get_color_space();
+	if (!filter->valid || !filter->target_valid) {
+		obs_source_skip_video_filter(filter->context);
+		return;
+	}
 
 	const enum gs_color_space preferred_spaces[] = {
 		GS_CS_SRGB,
@@ -409,52 +422,46 @@ static void scale_filter_render(void *data, gs_effect_t *effect)
 	};
 
 	const enum gs_color_space source_space = obs_source_get_color_space(
-		obs_filter_get_parent(filter->context),
+		obs_filter_get_target(filter->context),
 		OBS_COUNTOF(preferred_spaces), preferred_spaces);
 	float multiplier;
 	const char *technique = get_tech_name_and_multiplier(
-		filter, current_space, source_space, &multiplier);
-
-	if (!filter->valid || !filter->target_valid) {
-		obs_source_skip_video_filter(filter->context);
-		return;
-	}
-
+		filter, gs_get_color_space(), source_space, &multiplier);
 	const enum gs_color_format format =
 		gs_get_format_from_space(source_space);
-	if (!obs_source_process_filter_begin_with_color_space(
+	if (obs_source_process_filter_begin_with_color_space(
 		    filter->context, format, source_space,
-		    OBS_NO_DIRECT_RENDERING))
-		return;
+		    OBS_NO_DIRECT_RENDERING)) {
+		if (filter->dimension_param)
+			gs_effect_set_vec2(filter->dimension_param,
+					   &filter->dimension);
 
-	if (filter->dimension_param)
-		gs_effect_set_vec2(filter->dimension_param, &filter->dimension);
+		if (filter->dimension_i_param)
+			gs_effect_set_vec2(filter->dimension_i_param,
+					   &filter->dimension_i);
 
-	if (filter->dimension_i_param)
-		gs_effect_set_vec2(filter->dimension_i_param,
-				   &filter->dimension_i);
+		if (filter->undistort_factor_param)
+			gs_effect_set_float(filter->undistort_factor_param,
+					    (float)filter->undistort_factor);
 
-	if (filter->undistort_factor_param)
-		gs_effect_set_float(filter->undistort_factor_param,
-				    (float)filter->undistort_factor);
+		if (filter->multiplier_param)
+			gs_effect_set_float(filter->multiplier_param,
+					    multiplier);
 
-	if (filter->multiplier_param)
-		gs_effect_set_float(filter->multiplier_param, multiplier);
+		if (filter->sampling == OBS_SCALE_POINT)
+			gs_effect_set_next_sampler(filter->image_param,
+						   filter->point_sampler);
 
-	if (filter->sampling == OBS_SCALE_POINT)
-		gs_effect_set_next_sampler(filter->image_param,
-					   filter->point_sampler);
+		gs_blend_state_push();
+		gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
-	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+		obs_source_process_filter_tech_end(filter->context,
+						   filter->effect,
+						   filter->cx_out,
+						   filter->cy_out, technique);
 
-	obs_source_process_filter_tech_end(filter->context, filter->effect,
-					   filter->cx_out, filter->cy_out,
-					   technique);
-
-	gs_blend_state_pop();
-
-	UNUSED_PARAMETER(effect);
+		gs_blend_state_pop();
+	}
 }
 
 static const double downscale_vals[] = {1.0,         1.25, (1.0 / 0.75), 1.5,
@@ -541,7 +548,8 @@ static obs_properties_t *scale_filter_properties(void *data)
 
 	for (size_t i = 0; i < NUM_DOWNSCALES; i++) {
 		char str[32];
-		snprintf(str, 32, "%dx%d", downscales[i].cx, downscales[i].cy);
+		snprintf(str, sizeof(str), "%dx%d", downscales[i].cx,
+			 downscales[i].cy);
 		obs_property_list_add_string(p, str, str);
 	}
 
@@ -584,7 +592,7 @@ scale_filter_get_color_space(void *data, size_t count,
 
 	struct scale_filter_data *const filter = data;
 	const enum gs_color_space source_space = obs_source_get_color_space(
-		obs_filter_get_parent(filter->context),
+		obs_filter_get_target(filter->context),
 		OBS_COUNTOF(potential_spaces), potential_spaces);
 
 	enum gs_color_space space = source_space;

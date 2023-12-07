@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
     Copyright (C) 2014 by Zachary Lund <admin@computerquip.com>
 
     This program is free software: you can redistribute it and/or modify
@@ -1202,9 +1202,9 @@ void device_flush(gs_device_t *device)
 		glFlush();
 #else
 	glFlush();
-#endif
 
 	UNUSED_PARAMETER(device);
+#endif
 }
 
 void device_set_cull_mode(gs_device_t *device, enum gs_cull_mode mode)

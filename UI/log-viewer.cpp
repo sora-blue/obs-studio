@@ -13,21 +13,14 @@
 #include "qt-wrappers.hpp"
 
 OBSLogViewer::OBSLogViewer(QWidget *parent)
-	: QDialog(parent), ui(new Ui::OBSLogViewer)
+	: QDialog(parent),
+	  ui(new Ui::OBSLogViewer)
 {
 	setWindowFlags(windowFlags() & Qt::WindowMaximizeButtonHint &
 		       ~Qt::WindowContextHelpButtonHint);
 	setAttribute(Qt::WA_DeleteOnClose);
 
 	ui->setupUi(this);
-
-	const QFont fixedFont =
-		QFontDatabase::systemFont(QFontDatabase::FixedFont);
-
-	ui->textArea->setFont(fixedFont);
-	// Fix display of tabs & multiple spaces
-	ui->textArea->document()->setDefaultStyleSheet(
-		"font { white-space: pre; }");
 
 	bool showLogViewerOnStartup = config_get_bool(
 		App()->GlobalConfig(), "LogViewer", "ShowLogStartup");
@@ -74,9 +67,6 @@ void OBSLogViewer::InitLog()
 
 	if (file.open(QIODevice::ReadOnly)) {
 		QTextStream in(&file);
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-		in.setCodec("UTF-8");
-#endif
 
 		QTextDocument *doc = ui->textArea->document();
 		QTextCursor cursor(doc);

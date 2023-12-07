@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015 Hugh Bailey <obs.jim@gmail.com>
+ * Copyright (c) 2023 Lain Bailey <lain@obsproject.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -26,20 +26,20 @@
 #include <stdlib.h>
 #include "ffmpeg-mux.h"
 
+#include <util/threading.h>
+#include <util/platform.h>
+#include <util/circlebuf.h>
 #include <util/dstr.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/mastering_display_metadata.h>
 
 #define ANSI_COLOR_RED "\x1b[0;91m"
 #define ANSI_COLOR_MAGENTA "\x1b[0;95m"
 #define ANSI_COLOR_RESET "\x1b[0m"
 
-#if LIBAVCODEC_VERSION_MAJOR >= 58
-#define CODEC_FLAG_GLOBAL_H AV_CODEC_FLAG_GLOBAL_HEADER
-#else
-#define CODEC_FLAG_GLOBAL_H CODEC_FLAG_GLOBAL_HEADER
-#endif
+#define AVIO_BUFFER_SIZE 65536
 
 /* ------------------------------------------------------------------------- */
 
@@ -93,8 +93,11 @@ struct main_params {
 	int color_trc;
 	int colorspace;
 	int color_range;
+	int chroma_sample_location;
+	int max_luminance;
 	char *acodec;
 	char *muxer_settings;
+	int codec_tag;
 };
 
 struct audio_params {
@@ -115,6 +118,24 @@ struct audio_info {
 	AVCodecContext *ctx;
 };
 
+struct io_header {
+	uint64_t seek_offset;
+	size_t data_length;
+};
+
+struct io_buffer {
+	bool active;
+	bool shutdown_requested;
+	bool output_error;
+	os_event_t *buffer_space_available_event;
+	os_event_t *new_data_available_event;
+	pthread_t io_thread;
+	pthread_mutex_t data_mutex;
+	FILE *output_file;
+	struct circlebuf data;
+	uint64_t next_pos;
+};
+
 struct ffmpeg_mux {
 	AVFormatContext *output;
 	AVStream *video_stream;
@@ -127,8 +148,23 @@ struct ffmpeg_mux {
 	struct header *audio_header;
 	int num_audio_streams;
 	bool initialized;
-	char error[4096];
+	struct io_buffer io;
 };
+
+#define SRT_PROTO "srt"
+#define UDP_PROTO "udp"
+#define TCP_PROTO "tcp"
+#define HTTP_PROTO "http"
+#define RIST_PROTO "rist"
+
+static bool ffmpeg_mux_is_network(struct ffmpeg_mux *ffm)
+{
+	return !strncmp(ffm->params.file, SRT_PROTO, sizeof(SRT_PROTO) - 1) ||
+	       !strncmp(ffm->params.file, UDP_PROTO, sizeof(UDP_PROTO) - 1) ||
+	       !strncmp(ffm->params.file, TCP_PROTO, sizeof(TCP_PROTO) - 1) ||
+	       !strncmp(ffm->params.file, HTTP_PROTO, sizeof(HTTP_PROTO) - 1) ||
+	       !strncmp(ffm->params.file, RIST_PROTO, sizeof(RIST_PROTO) - 1);
+}
 
 static void header_free(struct header *header)
 {
@@ -140,8 +176,14 @@ static void free_avformat(struct ffmpeg_mux *ffm)
 	if (ffm->output) {
 		avcodec_free_context(&ffm->video_ctx);
 
-		if ((ffm->output->oformat->flags & AVFMT_NOFILE) == 0)
-			avio_close(ffm->output->pb);
+		if ((ffm->output->oformat->flags & AVFMT_NOFILE) == 0) {
+			if (!ffmpeg_mux_is_network(ffm)) {
+				av_free(ffm->output->pb->buffer);
+				avio_context_free(&ffm->output->pb);
+			} else {
+				avio_close(ffm->output->pb);
+			}
+		}
 
 		avformat_free_context(ffm->output);
 		ffm->output = NULL;
@@ -163,6 +205,26 @@ static void ffmpeg_mux_free(struct ffmpeg_mux *ffm)
 {
 	if (ffm->initialized) {
 		av_write_trailer(ffm->output);
+	}
+
+	// If we're writing to a file with the circlebuf, shut it
+	// down gracefully
+	if (ffm->io.active) {
+		os_atomic_set_bool(&ffm->io.shutdown_requested, true);
+
+		// Wakes up the I/O thread and waits for it to finish
+		pthread_mutex_lock(&ffm->io.data_mutex);
+		os_event_signal(ffm->io.new_data_available_event);
+		pthread_mutex_unlock(&ffm->io.data_mutex);
+		pthread_join(ffm->io.io_thread, NULL);
+
+		// Cleanup everything else
+		os_event_destroy(ffm->io.new_data_available_event);
+		os_event_destroy(ffm->io.buffer_space_available_event);
+
+		pthread_mutex_destroy(&ffm->io.data_mutex);
+
+		circlebuf_free(&ffm->io.data);
 	}
 
 	free_avformat(ffm);
@@ -320,10 +382,19 @@ static bool init_params(int *argc, char ***argv, struct main_params *params,
 		if (!get_opt_int(argc, argv, &params->color_range,
 				 "video color range"))
 			return false;
+		if (!get_opt_int(argc, argv, &params->chroma_sample_location,
+				 "video chroma sample location"))
+			return false;
+		if (!get_opt_int(argc, argv, &params->max_luminance,
+				 "video max luminance"))
+			return false;
 		if (!get_opt_int(argc, argv, &params->fps_num, "video fps num"))
 			return false;
 		if (!get_opt_int(argc, argv, &params->fps_den, "video fps den"))
 			return false;
+		if (!get_opt_int(argc, argv, &params->codec_tag,
+				 "video codec tag"))
+			params->codec_tag = 0;
 	}
 
 	if (params->tracks) {
@@ -394,6 +465,7 @@ static void create_video_stream(struct ffmpeg_mux *ffm)
 	context = avcodec_alloc_context3(NULL);
 	context->codec_type = codec->type;
 	context->codec_id = codec->id;
+	context->codec_tag = ffm->params.codec_tag;
 	context->bit_rate = (int64_t)ffm->params.vbitrate * 1000;
 	context->width = ffm->params.width;
 	context->height = ffm->params.height;
@@ -403,6 +475,7 @@ static void create_video_stream(struct ffmpeg_mux *ffm)
 	context->color_trc = ffm->params.color_trc;
 	context->colorspace = ffm->params.colorspace;
 	context->color_range = ffm->params.color_range;
+	context->chroma_sample_location = ffm->params.chroma_sample_location;
 	context->extradata = extradata;
 	context->extradata_size = ffm->video_header.size;
 	context->time_base =
@@ -411,12 +484,62 @@ static void create_video_stream(struct ffmpeg_mux *ffm)
 	ffm->video_stream->time_base = context->time_base;
 #if LIBAVFORMAT_VERSION_MAJOR < 59
 	// codec->time_base may still be used if LIBAVFORMAT_VERSION_MAJOR < 59
+	PRAGMA_WARN_PUSH
+	PRAGMA_WARN_DEPRECATION
 	ffm->video_stream->codec->time_base = context->time_base;
+	PRAGMA_WARN_POP
 #endif
 	ffm->video_stream->avg_frame_rate = av_inv_q(context->time_base);
 
+	const int max_luminance = ffm->params.max_luminance;
+	if (max_luminance > 0) {
+		size_t content_size;
+		AVContentLightMetadata *const content =
+			av_content_light_metadata_alloc(&content_size);
+		content->MaxCLL = max_luminance;
+		content->MaxFALL = max_luminance;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 102)
+		av_stream_add_side_data(ffm->video_stream,
+					AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+					(uint8_t *)content, content_size);
+#else
+		av_packet_side_data_add(
+			&ffm->video_stream->codecpar->coded_side_data,
+			&ffm->video_stream->codecpar->nb_coded_side_data,
+			AV_PKT_DATA_CONTENT_LIGHT_LEVEL, (uint8_t *)content,
+			content_size, 0);
+#endif
+
+		AVMasteringDisplayMetadata *const mastering =
+			av_mastering_display_metadata_alloc();
+		mastering->display_primaries[0][0] = av_make_q(17, 25);
+		mastering->display_primaries[0][1] = av_make_q(8, 25);
+		mastering->display_primaries[1][0] = av_make_q(53, 200);
+		mastering->display_primaries[1][1] = av_make_q(69, 100);
+		mastering->display_primaries[2][0] = av_make_q(3, 20);
+		mastering->display_primaries[2][1] = av_make_q(3, 50);
+		mastering->white_point[0] = av_make_q(3127, 10000);
+		mastering->white_point[1] = av_make_q(329, 1000);
+		mastering->min_luminance = av_make_q(0, 1);
+		mastering->max_luminance = av_make_q(max_luminance, 1);
+		mastering->has_primaries = 1;
+		mastering->has_luminance = 1;
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 102)
+		av_stream_add_side_data(ffm->video_stream,
+					AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+					(uint8_t *)mastering,
+					sizeof(*mastering));
+#else
+		av_packet_side_data_add(
+			&ffm->video_stream->codecpar->coded_side_data,
+			&ffm->video_stream->codecpar->nb_coded_side_data,
+			AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+			(uint8_t *)mastering, sizeof(*mastering), 0);
+#endif
+	}
+
 	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER)
-		context->flags |= CODEC_FLAG_GLOBAL_H;
+		context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
 	avcodec_parameters_from_context(ffm->video_stream->codecpar, context);
 
@@ -429,8 +552,16 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 	AVStream *stream;
 	void *extradata = NULL;
 	const char *name = ffm->params.acodec;
+	int channels;
 
-	const AVCodecDescriptor *codec = avcodec_descriptor_get_by_name(name);
+	const AVCodecDescriptor *codec_desc =
+		avcodec_descriptor_get_by_name(name);
+	if (!codec_desc) {
+		fprintf(stderr, "Couldn't find codec descriptor '%s'\n", name);
+		return;
+	}
+
+	const AVCodec *codec = avcodec_find_encoder(codec_desc->id);
 	if (!codec) {
 		fprintf(stderr, "Couldn't find codec '%s'\n", name);
 		return;
@@ -451,24 +582,33 @@ static void create_audio_stream(struct ffmpeg_mux *ffm, int idx)
 	context = avcodec_alloc_context3(NULL);
 	context->codec_type = codec->type;
 	context->codec_id = codec->id;
-	context->bit_rate = (int64_t)ffm->audio[idx].abitrate * 1000;
-	context->channels = ffm->audio[idx].channels;
+	if (!(codec_desc->props & AV_CODEC_PROP_LOSSLESS))
+		context->bit_rate = (int64_t)ffm->audio[idx].abitrate * 1000;
+
+	channels = ffm->audio[idx].channels;
+#if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(57, 24, 100)
+	context->channels = channels;
+#endif
 	context->sample_rate = ffm->audio[idx].sample_rate;
-	context->frame_size = ffm->audio[idx].frame_size;
-	context->sample_fmt = AV_SAMPLE_FMT_S16;
+	if (!(codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE))
+		context->frame_size = ffm->audio[idx].frame_size;
+
 	context->time_base = stream->time_base;
 	context->extradata = extradata;
 	context->extradata_size = ffm->audio_header[idx].size;
-	context->channel_layout =
-		av_get_default_channel_layout(context->channels);
-	//avutil default channel layout for 4 channels is 4.0 ; fix for quad
-	if (context->channels == 4)
-		context->channel_layout = av_get_channel_layout("quad");
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(59, 24, 100)
+	context->channel_layout = av_get_default_channel_layout(channels);
 	//avutil default channel layout for 5 channels is 5.0 ; fix for 4.1
-	if (context->channels == 5)
+	if (channels == 5)
 		context->channel_layout = av_get_channel_layout("4.1");
+#else
+	av_channel_layout_default(&context->ch_layout, channels);
+	//avutil default channel layout for 5 channels is 5.0 ; fix for 4.1
+	if (channels == 5)
+		context->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_4POINT1;
+#endif
 	if (ffm->output->oformat->flags & AVFMT_GLOBALHEADER)
-		context->flags |= CODEC_FLAG_GLOBAL_H;
+		context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
 	avcodec_parameters_from_context(stream->codecpar, context);
 
@@ -572,6 +712,224 @@ static inline bool ffmpeg_mux_get_extra_data(struct ffmpeg_mux *ffm)
 #pragma warning(disable : 4996)
 #endif
 
+#define CHUNK_SIZE 1048576
+
+static void *ffmpeg_mux_io_thread(void *data)
+{
+	struct ffmpeg_mux *ffm = data;
+
+	// Chunk collects the writes into a larger batch
+	size_t chunk_used = 0;
+
+	unsigned char *chunk = malloc(CHUNK_SIZE);
+	if (!chunk) {
+		os_atomic_set_bool(&ffm->io.output_error, true);
+		fprintf(stderr, "Error allocating memory for output\n");
+		goto error;
+	}
+
+	bool shutting_down;
+	bool want_seek = false;
+	bool force_flush_chunk = false;
+
+	// current_seek_position is a virtual position updated as we read from
+	// the buffer, if it becomes discontinuous due to a seek request from
+	// ffmpeg, then we flush the chunk. next_seek_position is the actual
+	// offset we should seek to when we write the chunk.
+	uint64_t current_seek_position = 0;
+	uint64_t next_seek_position;
+
+	for (;;) {
+		// Wait for ffmpeg to write data to the buffer
+		os_event_wait(ffm->io.new_data_available_event);
+
+		// Loop to write in chunk_size chunks
+		for (;;) {
+			shutting_down = os_atomic_load_bool(
+				&ffm->io.shutdown_requested);
+
+			pthread_mutex_lock(&ffm->io.data_mutex);
+
+			// Fetch as many writes as possible from the circlebuf
+			// and fill up our local chunk. This may involve seeking
+			// if ffmpeg needs to, so take care of that as well.
+			for (;;) {
+				size_t available = ffm->io.data.size;
+
+				// Buffer is empty (now) or was already empty (we got
+				// woken up to exit)
+				if (!available)
+					break;
+
+				// Get seek offset and data size
+				struct io_header header;
+				circlebuf_peek_front(&ffm->io.data, &header,
+						     sizeof(header));
+
+				// Do we need to seek?
+				if (header.seek_offset !=
+				    current_seek_position) {
+
+					// If there's already part of a chunk pending,
+					// flush it at the current offset. Similarly,
+					// if we already plan to seek, then seek.
+					if (chunk_used || want_seek) {
+						force_flush_chunk = true;
+						break;
+					}
+
+					// Mark that we need to seek and where to
+					want_seek = true;
+					next_seek_position = header.seek_offset;
+
+					// Update our virtual position
+					current_seek_position =
+						header.seek_offset;
+				}
+
+				// Make sure there's enough room for the data, if
+				// not then force a flush
+				if (header.data_length + chunk_used >
+				    CHUNK_SIZE) {
+					force_flush_chunk = true;
+					break;
+				}
+
+				// Remove header that we already read
+				circlebuf_pop_front(&ffm->io.data, NULL,
+						    sizeof(header));
+
+				// Copy from the buffer to our local chunk
+				circlebuf_pop_front(&ffm->io.data,
+						    chunk + chunk_used,
+						    header.data_length);
+
+				// Update offsets
+				chunk_used += header.data_length;
+				current_seek_position += header.data_length;
+			}
+
+			// Signal that there is more room in the buffer
+			os_event_signal(ffm->io.buffer_space_available_event);
+
+			// Try to avoid lots of small writes unless this was the final
+			// data left in the buffer. The buffer might be entirely empty
+			// if we were woken up to exit.
+			if (!force_flush_chunk &&
+			    (!chunk_used ||
+			     (chunk_used < 65536 && !shutting_down))) {
+				os_event_reset(
+					ffm->io.new_data_available_event);
+				pthread_mutex_unlock(&ffm->io.data_mutex);
+				break;
+			}
+
+			pthread_mutex_unlock(&ffm->io.data_mutex);
+
+			// Seek if we need to
+			if (want_seek) {
+				os_fseeki64(ffm->io.output_file,
+					    next_seek_position, SEEK_SET);
+
+				// Update the next virtual position, making sure to take
+				// into account the size of the chunk we're about to write.
+				current_seek_position =
+					next_seek_position + chunk_used;
+
+				want_seek = false;
+			}
+
+			// Write the current chunk to the output file
+			if (fwrite(chunk, chunk_used, 1, ffm->io.output_file) !=
+			    1) {
+				os_atomic_set_bool(&ffm->io.output_error, true);
+				fprintf(stderr, "Error writing to '%s', %s\n",
+					ffm->params.printable_file.array,
+					strerror(errno));
+				goto error;
+			}
+
+			chunk_used = 0;
+			force_flush_chunk = false;
+		}
+
+		// If this was the last chunk, time to exit
+		if (shutting_down)
+			break;
+	}
+
+error:
+	if (chunk)
+		free(chunk);
+
+	fclose(ffm->io.output_file);
+	return NULL;
+}
+
+static int64_t ffmpeg_mux_seek_av_buffer(void *opaque, int64_t offset,
+					 int whence)
+{
+	struct ffmpeg_mux *ffm = opaque;
+
+	// If the output thread failed, signal that back up the stack
+	if (os_atomic_load_bool(&ffm->io.output_error))
+		return -1;
+
+	// Update where the next write should go
+	pthread_mutex_lock(&ffm->io.data_mutex);
+	if (whence == SEEK_SET)
+		ffm->io.next_pos = offset;
+	else if (whence == SEEK_CUR)
+		ffm->io.next_pos += offset;
+	pthread_mutex_unlock(&ffm->io.data_mutex);
+
+	return 0;
+}
+
+static int ffmpeg_mux_write_av_buffer(void *opaque, uint8_t *buf, int buf_size)
+{
+	struct ffmpeg_mux *ffm = opaque;
+
+	// If the output thread failed, signal that back up the stack
+	if (os_atomic_load_bool(&ffm->io.output_error))
+		return -1;
+
+	for (;;) {
+		pthread_mutex_lock(&ffm->io.data_mutex);
+
+		// Avoid unbounded growth of the circlebuf, cap to 256 MB
+		if (ffm->io.data.capacity >= 256 * 1048576 &&
+		    ffm->io.data.capacity - ffm->io.data.size <
+			    buf_size + sizeof(struct io_header)) {
+			// No space, wait for the I/O thread to make space
+			os_event_reset(ffm->io.buffer_space_available_event);
+			pthread_mutex_unlock(&ffm->io.data_mutex);
+			os_event_wait(ffm->io.buffer_space_available_event);
+		} else {
+			break;
+		}
+	}
+
+	struct io_header header;
+
+	header.data_length = buf_size;
+	header.seek_offset = ffm->io.next_pos;
+
+	// Copy the data into the buffer
+	circlebuf_push_back(&ffm->io.data, &header, sizeof(header));
+	circlebuf_push_back(&ffm->io.data, buf, buf_size);
+
+	// Advance the next write position
+	ffm->io.next_pos += buf_size;
+
+	// Tell the I/O thread that there's new data to be written
+	os_event_signal(ffm->io.new_data_available_event);
+
+	pthread_mutex_unlock(&ffm->io.data_mutex);
+
+	return buf_size;
+}
+
 static inline int open_output_file(struct ffmpeg_mux *ffm)
 {
 #if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(59, 0, 100)
@@ -582,13 +940,54 @@ static inline int open_output_file(struct ffmpeg_mux *ffm)
 	int ret;
 
 	if ((format->flags & AVFMT_NOFILE) == 0) {
-		ret = avio_open(&ffm->output->pb, ffm->params.file,
-				AVIO_FLAG_WRITE);
-		if (ret < 0) {
-			fprintf(stderr, "Couldn't open '%s', %s\n",
-				ffm->params.printable_file.array,
-				av_err2str(ret));
-			return FFM_ERROR;
+		if (!ffmpeg_mux_is_network(ffm)) {
+			// If not outputting to a network, write to a circlebuf
+			// instead of relying on ffmpeg disk output. This hopefully
+			// works around too small buffers somewhere causing output
+			// stalls when recording.
+
+			// We're in charge of managing the actual file now
+			ffm->io.output_file = os_fopen(ffm->params.file, "wb");
+			if (!ffm->io.output_file) {
+				fprintf(stderr, "Couldn't open '%s', %s\n",
+					ffm->params.printable_file.array,
+					strerror(errno));
+				return FFM_ERROR;
+			}
+
+			// Start at 1MB, this can grow up to 256 MB depending
+			// how fast data is going in and out (limited in
+			// ffmpeg_mux_write_av_buffer)
+			circlebuf_reserve(&ffm->io.data, 1048576);
+
+			pthread_mutex_init(&ffm->io.data_mutex, NULL);
+
+			os_event_init(&ffm->io.buffer_space_available_event,
+				      OS_EVENT_TYPE_AUTO);
+			os_event_init(&ffm->io.new_data_available_event,
+				      OS_EVENT_TYPE_AUTO);
+
+			pthread_create(&ffm->io.io_thread, NULL,
+				       ffmpeg_mux_io_thread, ffm);
+
+			unsigned char *avio_ctx_buffer =
+				av_malloc(AVIO_BUFFER_SIZE);
+
+			ffm->output->pb = avio_alloc_context(
+				avio_ctx_buffer, AVIO_BUFFER_SIZE, 1, ffm, NULL,
+				ffmpeg_mux_write_av_buffer,
+				ffmpeg_mux_seek_av_buffer);
+
+			ffm->io.active = true;
+		} else {
+			ret = avio_open(&ffm->output->pb, ffm->params.file,
+					AVIO_FLAG_WRITE);
+			if (ret < 0) {
+				fprintf(stderr, "Couldn't open '%s', %s\n",
+					ffm->params.printable_file.array,
+					av_err2str(ret));
+				return FFM_ERROR;
+			}
 		}
 	}
 
@@ -625,21 +1024,6 @@ static inline int open_output_file(struct ffmpeg_mux *ffm)
 	av_dict_free(&dict);
 
 	return FFM_SUCCESS;
-}
-
-#define SRT_PROTO "srt"
-#define UDP_PROTO "udp"
-#define TCP_PROTO "tcp"
-#define HTTP_PROTO "http"
-#define RIST_PROTO "rist"
-
-static bool ffmpeg_mux_is_network(struct ffmpeg_mux *ffm)
-{
-	return !strncmp(ffm->params.file, SRT_PROTO, sizeof(SRT_PROTO) - 1) ||
-	       !strncmp(ffm->params.file, UDP_PROTO, sizeof(UDP_PROTO) - 1) ||
-	       !strncmp(ffm->params.file, TCP_PROTO, sizeof(TCP_PROTO) - 1) ||
-	       !strncmp(ffm->params.file, HTTP_PROTO, sizeof(HTTP_PROTO) - 1) ||
-	       !strncmp(ffm->params.file, RIST_PROTO, sizeof(RIST_PROTO) - 1);
 }
 
 static int ffmpeg_mux_init_context(struct ffmpeg_mux *ffm)
@@ -690,6 +1074,11 @@ static int ffmpeg_mux_init_context(struct ffmpeg_mux *ffm)
 	ffm->output->oformat->audio_codec = AV_CODEC_ID_NONE;
 #endif
 
+#if LIBAVFORMAT_VERSION_INT < AV_VERSION_INT(60, 0, 100)
+	/* Allow FLAC/OPUS in MP4 */
+	ffm->output->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+#endif
+
 	if (!init_streams(ffm)) {
 		free_avformat(ffm);
 		return FFM_ERROR;
@@ -716,10 +1105,6 @@ static int ffmpeg_mux_init_internal(struct ffmpeg_mux *ffm, int argc,
 		ffm->audio_header =
 			calloc(ffm->params.tracks, sizeof(*ffm->audio_header));
 	}
-
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(58, 9, 100)
-	av_register_all();
-#endif
 
 	if (!ffmpeg_mux_get_extra_data(ffm))
 		return FFM_ERROR;
@@ -815,14 +1200,14 @@ static inline bool ffmpeg_mux_packet(struct ffmpeg_mux *ffm, uint8_t *buf,
 
 	int ret = av_interleaved_write_frame(ffm->output, ffm->packet);
 
-	if (ret < 0) {
-		fprintf(stderr, "av_interleaved_write_frame failed: %d: %s\n",
-			ret, av_err2str(ret));
-	}
-
 	/* Treat "Invalid data found when processing input" and "Invalid argument" as non-fatal */
 	if (ret == AVERROR_INVALIDDATA || ret == -EINVAL) {
 		return true;
+	}
+
+	if (ret < 0) {
+		fprintf(stderr, "av_interleaved_write_frame failed: %d: %s\n",
+			ret, av_err2str(ret));
 	}
 
 	return ret >= 0;

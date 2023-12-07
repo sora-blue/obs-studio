@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2017 by Hugh Bailey <jim@obsproject.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,7 +16,6 @@
 ******************************************************************************/
 
 #include "obs-scripting-lua.h"
-#include "obs-scripting-config.h"
 #include <util/platform.h>
 #include <util/base.h>
 #include <util/dstr.h>
@@ -53,6 +52,7 @@ static const char *get_script_path_func = "\
 function script_path()\n\
 	 return \"%s\"\n\
 end\n\
+package.cpath = package.cpath .. \";\" .. script_path() .. \"/?." SO_EXT "\"\n\
 package.path = package.path .. \";\" .. script_path() .. \"/?.lua\"\n";
 
 static char *startup_script = NULL;
@@ -77,7 +77,7 @@ static void add_hook_functions(lua_State *script);
 static int obs_lua_remove_tick_callback(lua_State *script);
 static int obs_lua_remove_main_render_callback(lua_State *script);
 
-#if UI_ENABLED
+#ifdef ENABLE_UI
 void add_lua_frontend_funcs(lua_State *script);
 #endif
 
@@ -86,6 +86,7 @@ static bool load_lua_script(struct obs_lua_script *data)
 	struct dstr str = {0};
 	bool success = false;
 	int ret;
+	char *file_data;
 
 	lua_State *script = luaL_newstate();
 	if (!script) {
@@ -118,15 +119,25 @@ static bool load_lua_script(struct obs_lua_script *data)
 
 	add_lua_source_functions(script);
 	add_hook_functions(script);
-#if UI_ENABLED
+#ifdef ENABLE_UI
 	add_lua_frontend_funcs(script);
 #endif
 
-	if (luaL_loadfile(script, data->base.path.array) != 0) {
-		script_warn(&data->base, "Error loading file: %s",
+	file_data = os_quick_read_utf8_file(data->base.path.array);
+	if (!file_data) {
+		script_warn(&data->base, "Error opening file: %s",
 			    lua_tostring(script, -1));
 		goto fail;
 	}
+
+	if (luaL_loadbuffer(script, file_data, strlen(file_data),
+			    data->base.path.array) != 0) {
+		script_warn(&data->base, "Error loading file: %s",
+			    lua_tostring(script, -1));
+		bfree(file_data);
+		goto fail;
+	}
+	bfree(file_data);
 
 	if (lua_pcall(script, 0, LUA_MULTRET, 0) != 0) {
 		script_warn(&data->base, "Error running file: %s",
@@ -644,6 +655,17 @@ static int scene_enum_items(lua_State *script)
 	return 1;
 }
 
+static int sceneitem_group_enum_items(lua_State *script)
+{
+	obs_sceneitem_t *sceneitem;
+	if (!ls_get_libobs_obj(obs_sceneitem_t, 1, &sceneitem))
+		return 0;
+
+	lua_newtable(script);
+	obs_sceneitem_group_enum_items(sceneitem, enum_items_proc, script);
+	return 1;
+}
+
 /* -------------------------------------------- */
 
 static void defer_hotkey_unregister(void *p_cb)
@@ -1014,6 +1036,7 @@ static void add_hook_functions(lua_State *script)
 	add_func("obs_enum_sources", enum_sources);
 	add_func("obs_source_enum_filters", source_enum_filters);
 	add_func("obs_scene_enum_items", scene_enum_items);
+	add_func("obs_sceneitem_group_enum_items", sceneitem_group_enum_items);
 	add_func("source_list_release", source_list_release);
 	add_func("sceneitem_list_release", sceneitem_list_release);
 	add_func("calldata_source", calldata_source);
@@ -1107,8 +1130,11 @@ bool obs_lua_script_load(obs_script_t *s)
 	struct obs_lua_script *data = (struct obs_lua_script *)s;
 	if (!data->base.loaded) {
 		data->base.loaded = load_lua_script(data);
-		if (data->base.loaded)
+		if (data->base.loaded) {
+			blog(LOG_INFO, "[obs-scripting]: Loaded lua script: %s",
+			     data->base.file.array);
 			obs_lua_script_update(s, NULL);
+		}
 	}
 
 	return data->base.loaded;
@@ -1203,9 +1229,12 @@ void obs_lua_script_unload(obs_script_t *s)
 	/* call script_unload           */
 
 	pthread_mutex_lock(&data->mutex);
+	current_lua_script = data;
 
 	lua_getglobal(script, "script_unload");
 	lua_pcall(script, 0, 0, 0);
+
+	current_lua_script = NULL;
 
 	/* ---------------------------- */
 	/* remove all callbacks         */
@@ -1225,6 +1254,9 @@ void obs_lua_script_unload(obs_script_t *s)
 
 	lua_close(script);
 	s->loaded = false;
+
+	blog(LOG_INFO, "[obs-scripting]: Unloaded lua script: %s",
+	     data->base.file.array);
 }
 
 void obs_lua_script_destroy(obs_script_t *s)

@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013-2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -439,7 +439,7 @@ void obs_transition_set(obs_source_t *transition, obs_source_t *source)
 	obs_source_t *s[2];
 	bool active[2];
 
-	if (!transition_valid(transition, "obs_transition_clear"))
+	if (!transition_valid(transition, "obs_transition_set"))
 		return;
 
 	source = obs_source_get_ref(source);
@@ -832,12 +832,8 @@ void obs_transition_video_render2(
 static enum gs_color_space mix_spaces(enum gs_color_space a,
 				      enum gs_color_space b)
 {
-	assert((a == GS_CS_SRGB) || (a == GS_CS_SRGB_16F) ||
-	       (a == GS_CS_709_EXTENDED));
-	assert((b == GS_CS_SRGB) || (b == GS_CS_SRGB_16F) ||
-	       (b == GS_CS_709_EXTENDED));
-
-	if ((a == GS_CS_709_EXTENDED) || (b == GS_CS_709_EXTENDED))
+	if ((a == GS_CS_709_EXTENDED) || (a == GS_CS_709_SCRGB) ||
+	    (b == GS_CS_709_EXTENDED) || (b == GS_CS_709_SCRGB))
 		return GS_CS_709_EXTENDED;
 	if ((a == GS_CS_SRGB_16F) || (b == GS_CS_SRGB_16F))
 		return GS_CS_SRGB_16F;
@@ -896,6 +892,9 @@ bool obs_transition_video_render_direct(obs_source_t *transition,
 	if (t >= 1.0f && transition->transitioning_video) {
 		transition->transitioning_video = false;
 		video_stopped = true;
+
+		if (!obs_source_active(transition))
+			transition->transitioning_audio = false;
 
 		if (!transition->transitioning_audio) {
 			obs_transition_stop(transition);

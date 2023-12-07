@@ -7,12 +7,40 @@
 #include <util/threading.h>
 #include <util/platform.h>
 #include <util/dstr.h>
+#include <util/util_uint64.h>
 #include <obs-module.h>
 
 #include <ajantv2/includes/ntv2card.h>
 #include <ajantv2/includes/ntv2utils.h>
 
+#ifndef NSEC_PER_SEC
+#define NSEC_PER_SEC 1000000000LL
+#endif
 #define NTV2_AUDIOSIZE_MAX (401 * 1024)
+
+static constexpr int kDefaultAudioCaptureChannels = 2;
+
+static inline audio_repack_mode_t ConvertRepackFormat(speaker_layout format,
+						      bool swap = false)
+{
+	switch (format) {
+	case SPEAKERS_STEREO:
+		return repack_mode_8to2ch;
+	case SPEAKERS_2POINT1:
+		return repack_mode_8to3ch;
+	case SPEAKERS_4POINT0:
+		return repack_mode_8to4ch;
+	case SPEAKERS_4POINT1:
+		return swap ? repack_mode_8to5ch_swap : repack_mode_8to5ch;
+	case SPEAKERS_5POINT1:
+		return swap ? repack_mode_8to6ch_swap : repack_mode_8to6ch;
+	case SPEAKERS_7POINT1:
+		return swap ? repack_mode_8ch_swap : repack_mode_8ch;
+	default:
+		assert(false && "No repack requested");
+		return (audio_repack_mode_t)-1;
+	}
+}
 
 AJASource::AJASource(obs_source_t *source)
 	: mVideoBuffer{},
@@ -38,8 +66,8 @@ AJASource::~AJASource()
 	mTestPattern.clear();
 	mVideoBuffer.Deallocate();
 	mAudioBuffer.Deallocate();
-	mVideoBuffer = NULL;
-	mAudioBuffer = NULL;
+	mVideoBuffer = 0;
+	mAudioBuffer = 0;
 }
 
 void AJASource::SetCard(CNTV2Card *card)
@@ -172,6 +200,74 @@ void AJASource::GenerateTestPattern(NTV2VideoFormat vf, NTV2PixelFormat pf,
 	blog(LOG_DEBUG, "AJASource::GenerateTestPattern: Black");
 }
 
+static inline uint64_t samples_to_ns(size_t frames, uint_fast32_t rate)
+{
+	return util_mul_div64(frames, NSEC_PER_SEC, rate);
+}
+
+static inline uint64_t get_sample_time(size_t frames, uint_fast32_t rate)
+{
+	return os_gettime_ns() - samples_to_ns(frames, rate);
+}
+
+static bool CheckTransferAudioDMA(CNTV2Card *card,
+				  const NTV2AudioSystem audioSystem,
+				  void *buffer, ULWord bufferSize,
+				  ULWord dmaOffset, ULWord dmaSize,
+				  const char *log_id)
+{
+	if (dmaSize > bufferSize) {
+		blog(LOG_DEBUG,
+		     "AJASource::CaptureThread: Audio overrun %s! Buffer Size: %u, Bytes Captured: %u",
+		     log_id, bufferSize, dmaSize);
+		return false;
+	}
+
+	card->DMAReadAudio(audioSystem, (ULWord *)buffer, dmaOffset, dmaSize);
+	return true;
+}
+
+static inline bool TransferAudio(CNTV2Card *card,
+				 const NTV2AudioSystem audioSystem,
+				 NTV2_POINTER &audioBuffer,
+				 AudioOffsets &offsets)
+{
+	card->ReadAudioLastIn(offsets.currentAddress, audioSystem);
+	offsets.currentAddress += 1;
+	offsets.currentAddress += offsets.readOffset;
+
+	if (offsets.currentAddress < offsets.lastAddress) {
+		offsets.bytesRead = offsets.wrapAddress - offsets.lastAddress;
+
+		if (!CheckTransferAudioDMA(card, audioSystem, audioBuffer,
+					   audioBuffer.GetByteCount(),
+					   offsets.lastAddress,
+					   offsets.bytesRead, "(1)"))
+			return false;
+
+		if (!CheckTransferAudioDMA(
+			    card, audioSystem,
+			    audioBuffer.GetHostAddress(offsets.bytesRead),
+			    audioBuffer.GetByteCount() - offsets.bytesRead,
+			    offsets.readOffset,
+			    offsets.currentAddress - offsets.readOffset, "(2)"))
+			return false;
+		offsets.bytesRead +=
+			offsets.currentAddress - offsets.readOffset;
+
+	} else {
+		offsets.bytesRead =
+			offsets.currentAddress - offsets.lastAddress;
+		if (!CheckTransferAudioDMA(card, audioSystem, audioBuffer,
+					   audioBuffer.GetByteCount(),
+					   offsets.lastAddress,
+					   offsets.bytesRead, "(3)"))
+			return false;
+	}
+
+	return true;
+}
+
 void AJASource::CaptureThread(AJAThread *thread, void *data)
 {
 	UNUSED_PARAMETER(thread);
@@ -199,6 +295,7 @@ void AJASource::CaptureThread(AJAThread *thread, void *data)
 				    sourceProps.pixelFormat);
 	auto inputSource = sourceProps.InitialInputSource();
 	auto channel = sourceProps.Channel();
+	auto framestore = sourceProps.Framestore();
 	auto audioSystem = sourceProps.AudioSystem();
 	// Current "on-air" frame on the card. The capture thread "Ping-pongs" between
 	// two frames, starting at an index corresponding to the framestore channel.
@@ -208,17 +305,21 @@ void AJASource::CaptureThread(AJAThread *thread, void *data)
 	// Channel 3 (index 2) = frames 4/5
 	// Channel 4 (index 3) = frames 6/7
 	// etc...
-	ULWord currentCardFrame = (uint32_t)channel * 2;
+	ULWord currentCardFrame = GetIndexForNTV2Channel(framestore) * 2;
 	card->WaitForInputFieldID(NTV2_FIELD0, channel);
-
 	currentCardFrame ^= 1;
 
-	card->SetInputFrame(channel, currentCardFrame);
+	card->SetInputFrame(framestore, currentCardFrame);
 
 	AudioOffsets offsets;
 	ResetAudioBufferOffsets(card, audioSystem, offsets);
 
 	obs_data_t *settings = obs_source_get_settings(ajaSource->mSource);
+
+	AudioRepacker *audioRepacker = new AudioRepacker(
+		ConvertRepackFormat(sourceProps.SpeakerLayout(),
+				    sourceProps.swapFrontCenterLFE),
+		sourceProps.audioSampleSize * 8);
 
 	while (ajaSource->IsCapturing()) {
 		if (card->GetModelName() == "(Not Found)") {
@@ -230,7 +331,6 @@ void AJASource::CaptureThread(AJAThread *thread, void *data)
 		auto videoFormat = sourceProps.videoFormat;
 		auto pixelFormat = sourceProps.pixelFormat;
 		auto ioSelection = sourceProps.ioSelect;
-		bool audioOverrun = false;
 
 		card->WaitForInputFieldID(NTV2_FIELD0, channel);
 		currentCardFrame ^= 1;
@@ -263,83 +363,40 @@ void AJASource::CaptureThread(AJAThread *thread, void *data)
 			break;
 		}
 
-		card->ReadAudioLastIn(offsets.currentAddress, audioSystem);
-		offsets.currentAddress &= ~0x3; // Force DWORD alignment
-		offsets.currentAddress += offsets.readOffset;
-		if (offsets.currentAddress < offsets.lastAddress) {
-			offsets.bytesRead =
-				offsets.wrapAddress - offsets.lastAddress;
-
-			if (offsets.bytesRead >
-			    ajaSource->mAudioBuffer.GetByteCount()) {
-				blog(LOG_DEBUG,
-				     "AJASource::CaptureThread: Audio overrun (1)! Buffer Size: %d, Bytes Captured: %d",
-				     ajaSource->mAudioBuffer.GetByteCount(),
-				     offsets.bytesRead);
-				ResetAudioBufferOffsets(card, audioSystem,
-							offsets);
-				audioOverrun = true;
-			}
-
-			if (!audioOverrun) {
-				card->DMAReadAudio(audioSystem,
-						   ajaSource->mAudioBuffer,
-						   offsets.lastAddress,
-						   offsets.bytesRead);
-				card->DMAReadAudio(
-					audioSystem,
-					reinterpret_cast<ULWord *>(
-						ajaSource->mAudioBuffer
-							.GetHostAddress(
-								offsets.bytesRead)),
-					offsets.readOffset,
-					offsets.currentAddress -
-						offsets.readOffset);
-				offsets.bytesRead += offsets.currentAddress -
-						     offsets.readOffset;
-			}
-
-			if (offsets.bytesRead >
-			    ajaSource->mAudioBuffer.GetByteCount()) {
-				blog(LOG_DEBUG,
-				     "AJASource::CaptureThread: Audio overrun (2)! Buffer Size: %d, Bytes Captured: %d",
-				     ajaSource->mAudioBuffer.GetByteCount(),
-				     offsets.bytesRead);
-				ResetAudioBufferOffsets(card, audioSystem,
-							offsets);
-				audioOverrun = true;
-			}
+		if (!TransferAudio(card, audioSystem, ajaSource->mAudioBuffer,
+				   offsets)) {
+			ResetAudioBufferOffsets(card, audioSystem, offsets);
 		} else {
-			offsets.bytesRead =
-				offsets.currentAddress - offsets.lastAddress;
-			if (offsets.bytesRead >
-			    ajaSource->mAudioBuffer.GetByteCount()) {
-				blog(LOG_DEBUG,
-				     "AJASource::CaptureThread: Audio overrun (3)! Buffer Size: %d, Bytes Captured: %d",
-				     ajaSource->mAudioBuffer.GetByteCount(),
-				     offsets.bytesRead);
-				ResetAudioBufferOffsets(card, audioSystem,
-							offsets);
-				audioOverrun = true;
-			}
-			if (!audioOverrun) {
-				card->DMAReadAudio(audioSystem,
-						   ajaSource->mAudioBuffer,
-						   offsets.lastAddress,
-						   offsets.bytesRead);
-			}
-		}
-
-		if (!audioOverrun) {
 			offsets.lastAddress = offsets.currentAddress;
+			uint32_t sampleCount = offsets.bytesRead /
+					       (kDefaultAudioChannels *
+						sourceProps.audioSampleSize);
 			obs_source_audio audioPacket;
-			audioPacket.samples_per_sec = 48000;
-			audioPacket.format = AUDIO_FORMAT_32BIT;
-			audioPacket.speakers = SPEAKERS_7POINT1;
-			audioPacket.frames = offsets.bytesRead / 32;
-			audioPacket.timestamp = os_gettime_ns();
-			audioPacket.data[0] = (uint8_t *)ajaSource->mAudioBuffer
-						      .GetHostPointer();
+			audioPacket.samples_per_sec =
+				sourceProps.audioSampleRate;
+			audioPacket.format = sourceProps.AudioFormat();
+			audioPacket.speakers = sourceProps.SpeakerLayout();
+			audioPacket.frames = sampleCount;
+			audioPacket.timestamp =
+				get_sample_time(audioPacket.frames,
+						sourceProps.audioSampleRate);
+			uint8_t *hostAudioBuffer =
+				(uint8_t *)ajaSource->mAudioBuffer
+					.GetHostPointer();
+			if (sourceProps.audioNumChannels >= 2 &&
+			    sourceProps.audioNumChannels <= 6) {
+				/* Repack 8ch audio to fit specified OBS speaker layout */
+				audioRepacker->repack(hostAudioBuffer,
+						      sampleCount);
+				audioPacket.data[0] =
+					(*audioRepacker)->packet_buffer;
+			} else {
+				/* Silence, or pass-through 8ch of audio */
+				if (sourceProps.audioNumChannels == 0)
+					memset(hostAudioBuffer, 0,
+					       offsets.bytesRead);
+				audioPacket.data[0] = hostAudioBuffer;
+			}
 			obs_source_output_audio(ajaSource->mSource,
 						&audioPacket);
 		}
@@ -382,11 +439,14 @@ void AJASource::CaptureThread(AJAThread *thread, void *data)
 
 		obs_source_output_video2(ajaSource->mSource, &obsFrame);
 
-		card->SetInputFrame(channel, currentCardFrame);
+		card->SetInputFrame(framestore, currentCardFrame);
 	}
 
 	blog(LOG_INFO, "AJASource::Capturethread: Thread loop stopped");
-
+	if (audioRepacker) {
+		delete audioRepacker;
+		audioRepacker = nullptr;
+	}
 	ajaSource->GenerateTestPattern(sourceProps.videoFormat,
 				       sourceProps.pixelFormat,
 				       NTV2_TestPatt_Black);
@@ -673,6 +733,8 @@ bool aja_source_device_changed(void *data, obs_properties_t *props,
 		obs_properties_get(props, kUIPropSDITransport.id);
 	obs_property_t *sdi_4k_list =
 		obs_properties_get(props, kUIPropSDITransport4K.id);
+	obs_property_t *channel_format_list =
+		obs_properties_get(props, kUIPropChannelFormat.id);
 
 	obs_property_list_clear(vid_fmt_list);
 	obs_property_list_add_int(vid_fmt_list, obs_module_text("Auto"),
@@ -688,10 +750,26 @@ bool aja_source_device_changed(void *data, obs_properties_t *props,
 	IOSelection io_select = static_cast<IOSelection>(
 		obs_data_get_int(settings, kUIPropInput.id));
 	obs_property_list_clear(sdi_trx_list);
-	populate_sdi_transport_list(sdi_trx_list, io_select, deviceID, true);
+	populate_sdi_transport_list(sdi_trx_list, deviceID, true);
 
 	obs_property_list_clear(sdi_4k_list);
 	populate_sdi_4k_transport_list(sdi_4k_list);
+
+	obs_property_list_clear(channel_format_list);
+	obs_property_list_add_int(channel_format_list, TEXT_CHANNEL_FORMAT_NONE,
+				  0);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_2_0CH, 2);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_2_1CH, 3);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_4_0CH, 4);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_4_1CH, 5);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_5_1CH, 6);
+	obs_property_list_add_int(channel_format_list,
+				  TEXT_CHANNEL_FORMAT_7_1CH, 8);
 
 	populate_io_selection_input_list(cardID, ajaSource->GetName(), deviceID,
 					 io_select_list);
@@ -799,8 +877,8 @@ void aja_source_destroy(void *data)
 
 	ajaSource->mVideoBuffer.Deallocate();
 	ajaSource->mAudioBuffer.Deallocate();
-	ajaSource->mVideoBuffer = NULL;
-	ajaSource->mAudioBuffer = NULL;
+	ajaSource->mVideoBuffer = 0;
+	ajaSource->mAudioBuffer = 0;
 
 	auto &cardManager = aja::CardManager::Instance();
 	const auto &cardID = ajaSource->CardID();
@@ -895,10 +973,18 @@ static void aja_source_update(void *data, obs_data_t *settings)
 		obs_data_get_int(settings, kUIPropSDITransport.id));
 	auto sdi_t4k_select = static_cast<SDITransport4K>(
 		obs_data_get_int(settings, kUIPropSDITransport4K.id));
+	auto num_audio_channels =
+		obs_data_get_int(settings, kUIPropChannelFormat.id);
 	bool deactivateWhileNotShowing =
 		obs_data_get_bool(settings, kUIPropDeactivateWhenNotShowing.id);
+	bool swapFrontCenterLFE =
+		obs_data_get_bool(settings, kUIPropChannelSwap_FC_LFE.id);
 	const std::string &wantCardID =
 		obs_data_get_string(settings, kUIPropDevice.id);
+
+	obs_source_set_async_unbuffered(
+		ajaSource->GetOBSSource(),
+		!obs_data_get_bool(settings, kUIPropBuffering.id));
 
 	const std::string &currentCardID = ajaSource->CardID();
 	if (wantCardID != currentCardID) {
@@ -976,6 +1062,8 @@ static void aja_source_update(void *data, obs_data_t *settings)
 			? SDITransport::Unknown
 			: static_cast<SDITransport>(sdi_trx_select);
 	want_props.sdi4kTransport = sdi_t4k_select;
+	want_props.audioNumChannels = (uint32_t)num_audio_channels;
+	want_props.swapFrontCenterLFE = swapFrontCenterLFE;
 	want_props.vpids.clear();
 	want_props.deactivateWhileNotShowing = deactivateWhileNotShowing;
 	if (aja::IsIOSelectionSDI(io_select)) {
@@ -1086,9 +1174,21 @@ static obs_properties_t *aja_source_get_properties(void *data)
 	obs_properties_add_list(props, kUIPropSDITransport4K.id,
 				obs_module_text(kUIPropSDITransport4K.text),
 				OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_properties_add_list(props, kUIPropChannelFormat.id,
+				obs_module_text(kUIPropChannelFormat.text),
+				OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_t *swap = obs_properties_add_bool(
+		props, kUIPropChannelSwap_FC_LFE.id,
+		obs_module_text(kUIPropChannelSwap_FC_LFE.text));
+	obs_property_set_long_description(swap,
+					  kUIPropChannelSwap_FC_LFE.tooltip);
 	obs_properties_add_bool(
 		props, kUIPropDeactivateWhenNotShowing.id,
 		obs_module_text(kUIPropDeactivateWhenNotShowing.text));
+	obs_properties_add_bool(props, kUIPropBuffering.id,
+				obs_module_text(kUIPropBuffering.text));
+	obs_properties_add_bool(props, kUIPropBuffering.id,
+				obs_module_text(kUIPropBuffering.text));
 
 	obs_property_set_modified_callback(vid_fmt_list,
 					   aja_video_format_changed);
@@ -1113,8 +1213,18 @@ void aja_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(
 		settings, kUIPropSDITransport4K.id,
 		static_cast<long long>(SDITransport4K::TwoSampleInterleave));
+	obs_data_set_default_int(settings, kUIPropChannelFormat.id,
+				 kDefaultAudioCaptureChannels);
+	obs_data_set_default_bool(settings, kUIPropChannelSwap_FC_LFE.id,
+				  false);
 	obs_data_set_default_bool(settings, kUIPropDeactivateWhenNotShowing.id,
 				  false);
+}
+
+static void aja_source_get_defaults_v1(obs_data_t *settings)
+{
+	aja_source_get_defaults(settings);
+	obs_data_set_default_bool(settings, kUIPropBuffering.id, true);
 }
 
 void aja_source_save(void *data, obs_data_t *settings)
@@ -1148,14 +1258,14 @@ void aja_source_save(void *data, obs_data_t *settings)
 	}
 }
 
-struct obs_source_info create_aja_source_info()
+void register_aja_source_info()
 {
 	struct obs_source_info aja_source_info = {};
 	aja_source_info.id = kUIPropCaptureModule.id;
 	aja_source_info.type = OBS_SOURCE_TYPE_INPUT;
-	aja_source_info.output_flags = OBS_SOURCE_ASYNC_VIDEO |
-				       OBS_SOURCE_AUDIO |
-				       OBS_SOURCE_DO_NOT_DUPLICATE;
+	aja_source_info.output_flags =
+		OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
+		OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CAP_OBSOLETE;
 	aja_source_info.get_name = aja_source_get_name;
 	aja_source_info.create = aja_source_create;
 	aja_source_info.destroy = aja_source_destroy;
@@ -1165,8 +1275,13 @@ struct obs_source_info create_aja_source_info()
 	aja_source_info.activate = aja_source_activate;
 	aja_source_info.deactivate = aja_source_deactivate;
 	aja_source_info.get_properties = aja_source_get_properties;
-	aja_source_info.get_defaults = aja_source_get_defaults;
+	aja_source_info.get_defaults = aja_source_get_defaults_v1;
 	aja_source_info.save = aja_source_save;
 	aja_source_info.icon_type = OBS_ICON_TYPE_CAMERA;
-	return aja_source_info;
+	obs_register_source(&aja_source_info);
+
+	aja_source_info.version = 2;
+	aja_source_info.output_flags &= ~OBS_SOURCE_CAP_OBSOLETE;
+	aja_source_info.get_defaults = aja_source_get_defaults;
+	obs_register_source(&aja_source_info);
 }

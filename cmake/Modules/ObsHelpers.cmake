@@ -18,38 +18,44 @@ endif()
 # Create global property to hold list of activated modules
 set_property(GLOBAL PROPERTY OBS_MODULE_LIST "")
 
-# ##############################################################################
+# ######################################################################################################################
 # GLOBAL HELPER FUNCTIONS #
-# ##############################################################################
+# ######################################################################################################################
 
 # Helper function to set up runtime or library targets
 function(setup_binary_target target)
   # Set up installation paths for program install
   install(
     TARGETS ${target}
-    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION}
-            COMPONENT ${target}_Runtime
+    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION} COMPONENT ${target}_Runtime
     LIBRARY DESTINATION ${OBS_LIBRARY_DESTINATION}
             COMPONENT ${target}_Runtime
             NAMELINK_COMPONENT ${target}_Development
-    ARCHIVE DESTINATION ${OBS_LIBRARY_DESTINATION}
-            COMPONENT ${target}_Development
-    PUBLIC_HEADER DESTINATION ${OBS_INCLUDE_DESTINATION})
+    ARCHIVE DESTINATION ${OBS_LIBRARY_DESTINATION} COMPONENT ${target}_Development
+    PUBLIC_HEADER
+      DESTINATION ${OBS_INCLUDE_DESTINATION}
+      COMPONENT ${target}_Development
+      EXCLUDE_FROM_ALL)
 
   # Set up installation paths for development rundir
   install(
     TARGETS ${target}
-    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION} COMPONENT obs_${target}
-    LIBRARY DESTINATION ${OBS_LIBRARY_DESTINATION} COMPONENT obs_${target}
-    PUBLIC_HEADER DESTINATION ${OBS_INCLUDE_DESTINATION} EXCLUDE_FROM_ALL)
+    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION}
+            COMPONENT obs_${target}
+            EXCLUDE_FROM_ALL
+    LIBRARY DESTINATION ${OBS_LIBRARY_DESTINATION}
+            COMPONENT obs_${target}
+            EXCLUDE_FROM_ALL
+    PUBLIC_HEADER
+      DESTINATION ${OBS_INCLUDE_DESTINATION}
+      COMPONENT IGNORED
+      EXCLUDE_FROM_ALL)
 
   add_custom_command(
     TARGET ${target}
     POST_BUILD
-    COMMAND
-      "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
-      ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} >
-      "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
+    COMMAND "${CMAKE_COMMAND}" -E env DESTDIR= "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
+            ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} > "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
     COMMENT "Installing OBS rundir"
     VERBATIM)
 
@@ -68,7 +74,9 @@ function(setup_plugin_target target)
 
   install(
     TARGETS ${target}
-    RUNTIME DESTINATION ${OBS_PLUGIN_DESTINATION} COMPONENT obs_${target}
+    RUNTIME DESTINATION ${OBS_PLUGIN_DESTINATION}
+            COMPONENT obs_${target}
+            EXCLUDE_FROM_ALL
     LIBRARY DESTINATION ${OBS_PLUGIN_DESTINATION}
             COMPONENT obs_${target}
             EXCLUDE_FROM_ALL)
@@ -78,10 +86,8 @@ function(setup_plugin_target target)
   add_custom_command(
     TARGET ${target}
     POST_BUILD
-    COMMAND
-      "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
-      ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} >
-      "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
+    COMMAND "${CMAKE_COMMAND}" -E env DESTDIR= "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
+            ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} > "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
     COMMENT "Installing ${target} to OBS rundir"
     VERBATIM)
 
@@ -90,8 +96,6 @@ endfunction()
 
 # Helper function to set up OBS scripting plugin targets
 function(setup_script_plugin_target target)
-  set_target_properties(${target} PROPERTIES PREFIX "")
-
   install(
     TARGETS ${target}
     LIBRARY DESTINATION ${OBS_SCRIPT_PLUGIN_DESTINATION}
@@ -120,10 +124,8 @@ function(setup_script_plugin_target target)
   add_custom_command(
     TARGET ${target}
     POST_BUILD
-    COMMAND
-      "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
-      ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} >
-      "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
+    COMMAND "${CMAKE_COMMAND}" -E env DESTDIR= "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
+            ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} > "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
     COMMENT "Installing ${target} to OBS rundir"
     VERBATIM)
 
@@ -172,22 +174,10 @@ function(setup_obs_app target)
     add_dependencies(${target} ${OBS_MODULE_LIST})
   endif()
 
-  get_property(OBS_SCRIPTING_MODULE_LIST GLOBAL
-               PROPERTY OBS_SCRIPTING_MODULE_LIST)
+  get_property(OBS_SCRIPTING_MODULE_LIST GLOBAL PROPERTY OBS_SCRIPTING_MODULE_LIST)
   list(LENGTH OBS_SCRIPTING_MODULE_LIST _LEN)
   if(_LEN GREATER 0)
     add_dependencies(${target} ${OBS_SCRIPTING_MODULE_LIST})
-  endif()
-
-  # detect outdated obs-browser submodule
-  if(NOT TARGET OBS::browser AND TARGET obs-browser)
-    target_compile_features(obs-browser-page PRIVATE cxx_std_17)
-
-    add_library(OBS::browser ALIAS obs-browser)
-
-    if(NOT TARGET OBS::browser-panels AND BROWSER_PANEL_SUPPORT_ENABLED)
-      add_library(OBS::browser-panels ALIAS obs-browser)
-    endif()
   endif()
 
   if(TARGET OBS::browser)
@@ -201,10 +191,8 @@ function(setup_obs_app target)
   add_custom_command(
     TARGET ${target}
     POST_BUILD
-    COMMAND
-      "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
-      ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_rundir >
-      "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
+    COMMAND "${CMAKE_COMMAND}" -E env DESTDIR= "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
+            ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_rundir > "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
     COMMENT "Installing OBS rundir"
     VERBATIM)
 endfunction()
@@ -234,36 +222,44 @@ function(setup_target_browser target)
     EXCLUDE_FROM_ALL)
 endfunction()
 
-# Helper function to export target to build and install tree. Allows usage of
-# `find_package(libobs)` by other build trees
+# Helper function to export target to build and install tree. Allows usage of `find_package(libobs)` by other build
+# trees
 function(export_target target)
   set(CMAKE_EXPORT_PACKAGE_REGISTRY OFF)
 
+  if(OS_LINUX OR OS_FREEBSD)
+    set(_EXCLUDE "")
+  else()
+    set(_EXCLUDE "EXCLUDE_FROM_ALL")
+  endif()
   install(
     TARGETS ${target}
     EXPORT ${target}Targets
-    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION} COMPONENT obs_libraries
-    LIBRARY DESTINATION ${OBS_LIBRARY_DESTINATION} COMPONENT obs_libraries
-    ARCHIVE DESTINATION ${OBS_LIBRARY_DESTINATION} COMPONENT obs_libraries
+    RUNTIME DESTINATION ${OBS_EXECUTABLE_DESTINATION}
+            COMPONENT obs_libraries
+            ${_EXCLUDE}
+    LIBRARY DESTINATION ${OBS_LIBRARY_DESTINATION}
+            COMPONENT obs_libraries
+            ${_EXCLUDE}
+    ARCHIVE DESTINATION ${OBS_LIBRARY_DESTINATION}
+            COMPONENT obs_libraries
+            ${_EXCLUDE}
     INCLUDES
     DESTINATION ${OBS_INCLUDE_DESTINATION}
     PUBLIC_HEADER
       DESTINATION ${OBS_INCLUDE_DESTINATION}
       COMPONENT obs_libraries
-      EXCLUDE_FROM_ALL)
+      ${_EXCLUDE})
 
   include(GenerateExportHeader)
-  generate_export_header(${target} EXPORT_FILE_NAME
-                         ${CMAKE_CURRENT_BINARY_DIR}/${target}_EXPORT.h)
+  generate_export_header(${target} EXPORT_FILE_NAME ${CMAKE_CURRENT_BINARY_DIR}/${target}_EXPORT.h)
 
-  target_sources(${target}
-                 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${target}_EXPORT.h)
+  target_sources(${target} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/${target}_EXPORT.h)
 
   set(TARGETS_EXPORT_NAME "${target}Targets")
   include(CMakePackageConfigHelpers)
   configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/${target}Config.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/${target}Config.cmake
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/${target}Config.cmake.in ${CMAKE_CURRENT_BINARY_DIR}/${target}Config.cmake
     INSTALL_DESTINATION ${OBS_CMAKE_DESTINATION}/${target}
     PATH_VARS OBS_PLUGIN_DESTINATION OBS_DATA_DESTINATION)
 
@@ -285,36 +281,13 @@ function(export_target target)
     NAMESPACE OBS::
     DESTINATION ${OBS_CMAKE_DESTINATION}/${target}
     COMPONENT obs_libraries
-    EXCLUDE_FROM_ALL)
+    ${_EXCLUDE})
 
   install(
-    FILES ${CMAKE_CURRENT_BINARY_DIR}/${target}Config.cmake
-          ${CMAKE_CURRENT_BINARY_DIR}/${target}ConfigVersion.cmake
+    FILES ${CMAKE_CURRENT_BINARY_DIR}/${target}Config.cmake ${CMAKE_CURRENT_BINARY_DIR}/${target}ConfigVersion.cmake
     DESTINATION ${OBS_CMAKE_DESTINATION}/${target}
     COMPONENT obs_libraries
-    EXCLUDE_FROM_ALL)
-endfunction()
-
-# Helper function to install header files
-function(install_headers target)
-  install(
-    DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/"
-    DESTINATION ${OBS_INCLUDE_DESTINATION}
-    COMPONENT obs_libraries
-    EXCLUDE_FROM_ALL FILES_MATCHING
-    PATTERN "*.h"
-    PATTERN "*.hpp"
-    PATTERN "cmake" EXCLUDE
-    PATTERN "pkgconfig" EXCLUDE
-    PATTERN "data" EXCLUDE)
-
-  if(NOT EXISTS "${OBS_INCLUDE_DESTINATION}/obsconfig.h")
-    install(
-      FILES "${CMAKE_BINARY_DIR}/config/obsconfig.h"
-      DESTINATION "${OBS_INCLUDE_DESTINATION}"
-      COMPONENT obs_libraries
-      EXCLUDE_FROM_ALL)
-  endif()
+    ${_EXCLUDE})
 endfunction()
 
 # Helper function to define available graphics modules for targets
@@ -323,16 +296,11 @@ function(define_graphic_modules target)
     string(TOUPPER ${_GRAPHICS_API} _GRAPHICS_API_u)
     if(TARGET OBS::libobs-${_GRAPHICS_API})
       if(OS_POSIX AND NOT LINUX_PORTABLE)
-        target_compile_definitions(
-          ${target}
-          PRIVATE
-            DL_${_GRAPHICS_API_u}="$<TARGET_SONAME_FILE_NAME:libobs-${_GRAPHICS_API}>"
-        )
+        target_compile_definitions(${target}
+                                   PRIVATE DL_${_GRAPHICS_API_u}="$<TARGET_SONAME_FILE_NAME:libobs-${_GRAPHICS_API}>")
       else()
-        target_compile_definitions(
-          ${target}
-          PRIVATE
-            DL_${_GRAPHICS_API_u}="$<TARGET_FILE_NAME:libobs-${_GRAPHICS_API}>")
+        target_compile_definitions(${target}
+                                   PRIVATE DL_${_GRAPHICS_API_u}="$<TARGET_FILE_NAME:libobs-${_GRAPHICS_API}>")
       endif()
       add_dependencies(${target} OBS::libobs-${_GRAPHICS_API})
     else()
@@ -342,37 +310,43 @@ function(define_graphic_modules target)
 endfunction()
 
 macro(find_qt)
-  set(oneValueArgs VERSION)
   set(multiValueArgs COMPONENTS COMPONENTS_WIN COMPONENTS_MAC COMPONENTS_LINUX)
-  cmake_parse_arguments(FIND_QT "" "${oneValueArgs}" "${multiValueArgs}"
-                        ${ARGN})
+  cmake_parse_arguments(FIND_QT "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  set(QT_NO_CREATE_VERSIONLESS_TARGETS ON)
+  find_package(
+    Qt6
+    COMPONENTS Core
+    REQUIRED)
+  set(QT_NO_CREATE_VERSIONLESS_TARGETS OFF)
 
   if(OS_WINDOWS)
     find_package(
-      Qt${FIND_QT_VERSION}
+      Qt6
       COMPONENTS ${FIND_QT_COMPONENTS} ${FIND_QT_COMPONENTS_WIN}
       REQUIRED)
   elseif(OS_MACOS)
     find_package(
-      Qt${FIND_QT_VERSION}
+      Qt6
       COMPONENTS ${FIND_QT_COMPONENTS} ${FIND_QT_COMPONENTS_MAC}
       REQUIRED)
   else()
     find_package(
-      Qt${FIND_QT_VERSION}
+      Qt6
       COMPONENTS ${FIND_QT_COMPONENTS} ${FIND_QT_COMPONENTS_LINUX}
       REQUIRED)
   endif()
 
-  foreach(_COMPONENT IN LISTS FIND_QT_COMPONENTS FIND_QT_COMPONENTS_WIN
-                              FIND_QT_COMPONENTS_MAC FIND_QT_COMPONENTS_LINUX)
-    if(NOT TARGET Qt::${_COMPONENT} AND TARGET
-                                        Qt${FIND_QT_VERSION}::${_COMPONENT})
+  list(APPEND FIND_QT_COMPONENTS "Core")
+
+  if("Gui" IN_LIST FIND_QT_COMPONENTS_LINUX)
+    list(APPEND FIND_QT_COMPONENTS_LINUX "GuiPrivate")
+  endif()
+
+  foreach(_COMPONENT IN LISTS FIND_QT_COMPONENTS FIND_QT_COMPONENTS_WIN FIND_QT_COMPONENTS_MAC FIND_QT_COMPONENTS_LINUX)
+    if(NOT TARGET Qt::${_COMPONENT} AND TARGET Qt6::${_COMPONENT})
 
       add_library(Qt::${_COMPONENT} INTERFACE IMPORTED)
-      set_target_properties(
-        Qt::${_COMPONENT} PROPERTIES INTERFACE_LINK_LIBRARIES
-                                     "Qt${FIND_QT_VERSION}::${_COMPONENT}")
+      set_target_properties(Qt::${_COMPONENT} PROPERTIES INTERFACE_LINK_LIBRARIES "Qt6::${_COMPONENT}")
     endif()
   endforeach()
 endmacro()
@@ -405,9 +379,9 @@ elseif(OS_POSIX)
   include(ObsHelpers_Linux)
 endif()
 
-# ##############################################################################
+# ######################################################################################################################
 # LEGACY FALLBACKS     #
-# ##############################################################################
+# ######################################################################################################################
 
 # Helper function to install OBS plugin with associated resource directory
 function(_install_obs_plugin_with_data target source)
@@ -424,16 +398,14 @@ function(_install_obs_plugin_with_data target source)
 
     install(
       DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${source}/
-      DESTINATION
-        ${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/obs-plugins/${target}
+      DESTINATION ${OBS_OUTPUT_DIR}/$<CONFIG>/${OBS_DATA_DESTINATION}/obs-plugins/${target}
       COMPONENT obs_${target}
       EXCLUDE_FROM_ALL)
 
     if(OS_WINDOWS AND DEFINED ENV{obsInstallerTempDir})
       install(
         DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${source}/
-        DESTINATION
-          $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/obs-plugins/${target}
+        DESTINATION $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/obs-plugins/${target}
         COMPONENT obs_${target}
         EXCLUDE_FROM_ALL)
     endif()
@@ -452,32 +424,31 @@ function(_install_obs_datatarget target destination)
     LIBRARY DESTINATION ${OBS_DATA_DESTINATION}/${destination}
             COMPONENT ${target}_Runtime
             NAMELINK_COMPONENT ${target}_Development
-    RUNTIME DESTINATION ${OBS_DATA_DESTINATION}/${destination}
-            COMPONENT ${target}_Runtime)
+    RUNTIME DESTINATION ${OBS_DATA_DESTINATION}/${destination} COMPONENT ${target}_Runtime)
 
   install(
     TARGETS ${target}
     LIBRARY DESTINATION ${OBS_DATA_DESTINATION}/${destination}
             COMPONENT obs_${target}
+            EXCLUDE_FROM_ALL
     RUNTIME DESTINATION ${OBS_DATA_DESTINATION}/${destination}
             COMPONENT obs_${target}
             EXCLUDE_FROM_ALL)
 
   if(OS_WINDOWS)
     if(MSVC)
-      add_target_resource(${target} "$<TARGET_PDB_FILE:${target}>"
-                          "${destination}" OPTIONAL)
+      add_target_resource(${target} "$<TARGET_PDB_FILE:${target}>" "${destination}" OPTIONAL)
     endif()
 
     if(DEFINED ENV{obsInstallerTempDir})
       install(
         TARGETS ${target}
         RUNTIME
-          DESTINATION
-            $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/${destination}/$<TARGET_FILE_NAME:${target}>
+          DESTINATION $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/${destination}/$<TARGET_FILE_NAME:${target}>
+          COMPONENT obs_${target}
+          EXCLUDE_FROM_ALL
         LIBRARY
-          DESTINATION
-            $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/${destination}/$<TARGET_FILE_NAME:${target}>
+          DESTINATION $ENV{obsInstallerTempDir}/${OBS_DATA_DESTINATION}/${destination}/$<TARGET_FILE_NAME:${target}>
           COMPONENT obs_${target}
           EXCLUDE_FROM_ALL)
     endif()
@@ -486,10 +457,18 @@ function(_install_obs_datatarget target destination)
   add_custom_command(
     TARGET ${target}
     POST_BUILD
-    COMMAND
-      "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
-      ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} >
-      "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
+    COMMAND "${CMAKE_COMMAND}" -E env DESTDIR= "${CMAKE_COMMAND}" --install .. --config $<CONFIG> --prefix
+            ${OBS_OUTPUT_DIR}/$<CONFIG> --component obs_${target} > "$<IF:$<PLATFORM_ID:Windows>,nul,/dev/null>"
     COMMENT "Installing ${target} to OBS rundir"
     VERBATIM)
 endfunction()
+
+# legacy_check: Macro to check for CMake framework version and include legacy list file
+macro(legacy_check)
+  if(OBS_CMAKE_VERSION VERSION_LESS 3.0.0)
+    if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/legacy.cmake)
+      include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/legacy.cmake)
+    endif()
+    return()
+  endif()
+endmacro()

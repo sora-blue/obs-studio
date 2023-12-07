@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 Hugh Bailey <obs.jim@gmail.com>
+ * Copyright (c) 2023 Lain Bailey <lain@obsproject.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -103,6 +103,7 @@ OBS_NORETURN void bcrash(const char *format, ...)
 	va_start(args, format);
 	crash_handler(format, args, crash_param);
 	va_end(args);
+	exit(0);
 }
 
 void blogva(int log_level, const char *format, va_list args)

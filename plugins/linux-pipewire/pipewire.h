@@ -21,31 +21,28 @@
 #pragma once
 
 #include <obs-module.h>
-#include <pipewire/pipewire.h>
 
-#include "portal.h"
+#include <pipewire/keys.h>
+#include <pipewire/properties.h>
 
-typedef struct _obs_pipewire_data obs_pipewire_data;
+typedef struct _obs_pipewire obs_pipewire;
+typedef struct _obs_pipewire_stream obs_pipewire_stream;
 
-void *obs_pipewire_create(enum portal_capture_type capture_type,
-			  obs_data_t *settings, obs_source_t *source);
+obs_pipewire *obs_pipewire_create(int pipewire_fd);
+void obs_pipewire_destroy(obs_pipewire *obs_pw);
 
-void obs_pipewire_destroy(obs_pipewire_data *obs_pw);
+obs_pipewire_stream *
+obs_pipewire_connect_stream(obs_pipewire *obs_pw, obs_source_t *source,
+			    int pipewire_node, const char *stream_name,
+			    struct pw_properties *stream_properties);
 
-void obs_pipewire_save(obs_pipewire_data *obs_pw, obs_data_t *settings);
-void obs_pipewire_get_defaults(obs_data_t *settings);
+void obs_pipewire_stream_show(obs_pipewire_stream *obs_pw);
+void obs_pipewire_stream_hide(obs_pipewire_stream *obs_pw);
+uint32_t obs_pipewire_stream_get_width(obs_pipewire_stream *obs_pw);
+uint32_t obs_pipewire_stream_get_height(obs_pipewire_stream *obs_pw);
+void obs_pipewire_stream_video_render(obs_pipewire_stream *obs_pw,
+				      gs_effect_t *effect);
 
-obs_properties_t *obs_pipewire_get_properties(obs_pipewire_data *obs_pw,
-					      const char *reload_string_id);
-
-void obs_pipewire_update(obs_pipewire_data *obs_pw, obs_data_t *settings);
-
-void obs_pipewire_show(obs_pipewire_data *obs_pw);
-
-void obs_pipewire_hide(obs_pipewire_data *obs_pw);
-uint32_t obs_pipewire_get_width(obs_pipewire_data *obs_pw);
-uint32_t obs_pipewire_get_height(obs_pipewire_data *obs_pw);
-void obs_pipewire_video_render(obs_pipewire_data *obs_pw, gs_effect_t *effect);
-
-enum portal_capture_type
-obs_pipewire_get_capture_type(obs_pipewire_data *obs_pw);
+void obs_pipewire_stream_set_cursor_visible(obs_pipewire_stream *obs_pw,
+					    bool cursor_visible);
+void obs_pipewire_stream_destroy(obs_pipewire_stream *obs_pw_stream);

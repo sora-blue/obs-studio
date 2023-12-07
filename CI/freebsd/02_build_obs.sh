@@ -32,26 +32,30 @@ _configure_obs() {
     status "Configuration of OBS build system..."
     check_ccache
 
-    if [ "${TWITCH_CLIENTID}" -a "${TWICH_HASH}" ]; then
-        TWITCH_OPTIONS="-DTWITCH_CLIENTID=\"${TWITCH_CLIENTID}\" -DTWITCH_HASH=\"${TWITCH_HASH}\""
+    if [ "${TWITCH_CLIENTID}" -a "${TWITCH_HASH}" ]; then
+        TWITCH_OPTIONS="-DTWITCH_CLIENTID='${TWITCH_CLIENTID}' -DTWITCH_HASH='${TWITCH_HASH}'"
     fi
 
     if [ "${RESTREAM_CLIENTID}" -a "${RESTREAM_HASH}" ]; then
-        RESTREAM_OPTIONS="-DRESTREAM_CLIENTID=\"${RESTREAM_CLIENTID}\" -DRESTREAM_HASH=\"${RESTREAM_HASH}\""
+        RESTREAM_OPTIONS="-DRESTREAM_CLIENTID='${RESTREAM_CLIENTID}' -DRESTREAM_HASH='${RESTREAM_HASH}'"
     fi
 
     if [ "${YOUTUBE_CLIENTID}" -a "${YOUTUBE_CLIENTID_HASH}" -a "${YOUTUBE_SECRET}" -a "{YOUTUBE_SECRET_HASH}" ]; then
-        YOUTUBE_OPTIONS="-DYOUTUBE_CLIENTID=\"${YOUTUBE_CLIENTID}\" -DYOUTUBE_CLIENTID_HASH=\"${YOUTUBE_CLIENTID_HASH}\" -DYOUTUBE_SECRET=\"${YOUTUBE_SECRET}\" -DYOUTUBE_SECRET_HASH=\"${YOUTUBE_SECRET_HASH}\""
+        YOUTUBE_OPTIONS="-DYOUTUBE_CLIENTID='${YOUTUBE_CLIENTID}' -DYOUTUBE_CLIENTID_HASH='${YOUTUBE_CLIENTID_HASH}' -DYOUTUBE_SECRET='${YOUTUBE_SECRET}' -DYOUTUBE_SECRET_HASH='${YOUTUBE_SECRET_HASH}'"
     fi
 
     if [ "${PORTABLE}" ]; then
         PORTABLE_BUILD="ON"
     fi
 
+    if [ "${DISABLE_PIPEWIRE}" ]; then
+        PIPEWIRE_OPTION="-DENABLE_PIPEWIRE=OFF"
+    fi
+
     cmake -S . -B ${BUILD_DIR} -G Ninja \
         -DCMAKE_BUILD_TYPE=${BUILD_CONFIG} \
         -DLINUX_PORTABLE=${PORTABLE_BUILD:-OFF} \
-        -DENABLE_PIPEWIRE=OFF \
+        ${PIPEWIRE_OPTION} \
         ${CCACHE_OPTIONS} \
         ${TWITCH_OPTIONS} \
         ${YOUTUBE_OPTIONS} \
@@ -96,6 +100,7 @@ print_usage() {
             "-q, --quiet                    : Suppress most build process output\n" \
             "-v, --verbose                  : Enable more verbose build process output\n" \
             "-p, --portable                 : Create portable build (default: off)\n" \
+            "--disable-pipewire             : Disable building with PipeWire support (default: off)\n" \
             "--build-dir                    : Specify alternative build directory (default: build)\n"
 }
 
@@ -107,6 +112,7 @@ build-obs-main() {
                 -q | --quiet ) export QUIET=TRUE; shift ;;
                 -v | --verbose ) export VERBOSE=TRUE; shift ;;
                 -p | --portable ) export PORTABLE=TRUE; shift ;;
+                --disable-pipewire ) DISABLE_PIPEWIRE=TRUE; shift ;;
                 --build-dir ) BUILD_DIR="${2}"; shift 2 ;;
                 -- ) shift; break ;;
                 * ) break ;;

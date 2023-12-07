@@ -27,7 +27,14 @@ private:
 	bool ignoreTransformSignal = false;
 	bool ignoreItemChange = false;
 
-	void HookWidget(QWidget *widget, const char *signal, const char *slot);
+	template<typename Widget, typename WidgetParent, typename... SignalArgs,
+		 typename... SlotArgs>
+	void HookWidget(Widget *widget,
+			void (WidgetParent::*signal)(SignalArgs...),
+			void (OBSBasicTransform::*slot)(SlotArgs...))
+	{
+		QObject::connect(widget, signal, this, slot);
+	}
 
 	void SetScene(OBSScene scene);
 	void SetItem(OBSSceneItem newItem);
@@ -45,10 +52,9 @@ private slots:
 	void OnBoundsType(int index);
 	void OnControlChanged();
 	void OnCropChanged();
-	void on_resetButton_clicked();
 
 public:
-	OBSBasicTransform(OBSBasic *parent);
+	OBSBasicTransform(OBSSceneItem item, OBSBasic *parent);
 	~OBSBasicTransform();
 
 public slots:

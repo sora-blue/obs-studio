@@ -219,14 +219,6 @@ float4 PSDrawLanczosRGBAMultiplyTonemap(FragData f_in, bool undistort) : TARGET
 	return rgba;
 }
 
-float4 PSDrawLanczosRGBADivide(FragData f_in) : TARGET
-{
-	float4 rgba = DrawLanczos(f_in, false);
-	float alpha = rgba.a;
-	float multiplier = (alpha > 0.0) ? (1.0 / alpha) : 0.0;
-	return float4(rgba.rgb * multiplier, alpha);
-}
-
 technique Draw
 {
 	pass
@@ -260,15 +252,6 @@ technique DrawMultiplyTonemap
 	{
 		vertex_shader = VSDefault(v_in);
 		pixel_shader  = PSDrawLanczosRGBAMultiplyTonemap(f_in, false);
-	}
-}
-
-technique DrawAlphaDivide
-{
-	pass
-	{
-		vertex_shader = VSDefault(v_in);
-		pixel_shader  = PSDrawLanczosRGBADivide(f_in);
 	}
 }
 

@@ -13,15 +13,11 @@
 #include <Windows.h>
 #endif
 
-#ifdef ENABLE_WAYLAND
-#include <obs-nix-platform.h>
-
 class SurfaceEventFilter : public QObject {
 	OBSQTDisplay *display;
-	int mTimerId;
 
 public:
-	SurfaceEventFilter(OBSQTDisplay *src) : display(src), mTimerId(0) {}
+	SurfaceEventFilter(OBSQTDisplay *src) : QObject(src), display(src) {}
 
 protected:
 	bool eventFilter(QObject *obj, QEvent *event) override
@@ -33,17 +29,14 @@ protected:
 		case QEvent::PlatformSurface:
 			surfaceEvent =
 				static_cast<QPlatformSurfaceEvent *>(event);
-			if (surfaceEvent->surfaceEventType() !=
-			    QPlatformSurfaceEvent::SurfaceCreated)
-				return result;
 
-			if (display->windowHandle()->isExposed())
-				createOBSDisplay();
-			else
-				mTimerId = startTimer(67); // Arbitrary
-			break;
-		case QEvent::Expose:
-			createOBSDisplay();
+			switch (surfaceEvent->surfaceEventType()) {
+			case QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed:
+				display->DestroyDisplay();
+				break;
+			default:
+				break;
+			}
 			break;
 		default:
 			break;
@@ -51,21 +44,7 @@ protected:
 
 		return result;
 	}
-
-	void timerEvent(QTimerEvent *) { createOBSDisplay(true); }
-
-private:
-	void createOBSDisplay(bool force = false)
-	{
-		display->CreateDisplay(force);
-		if (mTimerId > 0) {
-			killTimer(mTimerId);
-			mTimerId = 0;
-		}
-	}
 };
-
-#endif
 
 static inline long long color_to_int(const QColor &color)
 {
@@ -120,11 +99,7 @@ OBSQTDisplay::OBSQTDisplay(QWidget *parent, Qt::WindowFlags flags)
 	connect(windowHandle(), &QWindow::visibleChanged, windowVisible);
 	connect(windowHandle(), &QWindow::screenChanged, screenChanged);
 
-#ifdef ENABLE_WAYLAND
-	if (obs_get_nix_platform() == OBS_NIX_PLATFORM_WAYLAND)
-		windowHandle()->installEventFilter(
-			new SurfaceEventFilter(this));
-#endif
+	windowHandle()->installEventFilter(new SurfaceEventFilter(this));
 }
 
 QColor OBSQTDisplay::GetDisplayBackgroundColor() const
@@ -147,12 +122,15 @@ void OBSQTDisplay::UpdateDisplayBackgroundColor()
 	obs_display_set_background_color(display, backgroundColor);
 }
 
-void OBSQTDisplay::CreateDisplay(bool force)
+void OBSQTDisplay::CreateDisplay()
 {
 	if (display)
 		return;
 
-	if (!windowHandle()->isExposed() && !force)
+	if (destroying)
+		return;
+
+	if (!windowHandle()->isExposed())
 		return;
 
 	QSize size = GetPixelSize(this);
@@ -185,11 +163,7 @@ void OBSQTDisplay::moveEvent(QMoveEvent *event)
 	OnMove();
 }
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 bool OBSQTDisplay::nativeEvent(const QByteArray &, void *message, qintptr *)
-#else
-bool OBSQTDisplay::nativeEvent(const QByteArray &, void *message, long *)
-#endif
 {
 #ifdef _WIN32
 	const MSG &msg = *static_cast<MSG *>(message);
@@ -197,6 +171,8 @@ bool OBSQTDisplay::nativeEvent(const QByteArray &, void *message, long *)
 	case WM_DISPLAYCHANGE:
 		OnDisplayChange();
 	}
+#else
+	UNUSED_PARAMETER(message);
 #endif
 
 	return false;

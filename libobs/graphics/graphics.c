@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -1387,7 +1387,7 @@ gs_texture_t *gs_texture_create(uint32_t width, uint32_t height,
 						       levels, data, flags);
 }
 
-#if __linux__
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__DragonFly__)
 
 gs_texture_t *gs_texture_create_from_dmabuf(
 	unsigned int width, unsigned int height, uint32_t drm_format,
@@ -1419,6 +1419,16 @@ bool gs_query_dmabuf_modifiers_for_format(uint32_t drm_format,
 
 	return graphics->exports.device_query_dmabuf_modifiers_for_format(
 		graphics->device, drm_format, modifiers, n_modifiers);
+}
+
+gs_texture_t *gs_texture_create_from_pixmap(uint32_t width, uint32_t height,
+					    enum gs_color_format color_format,
+					    uint32_t target, void *pixmap)
+{
+	graphics_t *graphics = thread_graphics;
+
+	return graphics->exports.device_texture_create_from_pixmap(
+		graphics->device, width, height, color_format, target, pixmap);
 }
 
 #endif
@@ -1931,6 +1941,16 @@ void gs_clear(uint32_t clear_flags, const struct vec4 *color, float depth,
 
 	graphics->exports.device_clear(graphics->device, clear_flags, color,
 				       depth, stencil);
+}
+
+bool gs_is_present_ready(void)
+{
+	graphics_t *graphics = thread_graphics;
+
+	if (!gs_valid("gs_is_present_ready"))
+		return false;
+
+	return graphics->exports.device_is_present_ready(graphics->device);
 }
 
 void gs_present(void)
@@ -3020,6 +3040,17 @@ uint32_t gs_get_adapter_count(void)
 	return thread_graphics->exports.gs_get_adapter_count();
 }
 
+bool gs_can_adapter_fast_clear(void)
+{
+	if (!gs_valid("gs_can_adapter_fast_clear"))
+		return false;
+	if (!thread_graphics->exports.device_can_adapter_fast_clear)
+		return false;
+
+	return thread_graphics->exports.device_can_adapter_fast_clear(
+		thread_graphics->device);
+}
+
 gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator)
 {
 	if (!gs_valid_p("gs_duplicator_get_texture", duplicator))
@@ -3028,6 +3059,28 @@ gs_texture_t *gs_duplicator_get_texture(gs_duplicator_t *duplicator)
 		return NULL;
 
 	return thread_graphics->exports.gs_duplicator_get_texture(duplicator);
+}
+
+enum gs_color_space gs_duplicator_get_color_space(gs_duplicator_t *duplicator)
+{
+	if (!gs_valid_p("gs_duplicator_get_color_space", duplicator))
+		return GS_CS_SRGB;
+	if (!thread_graphics->exports.gs_duplicator_get_color_space)
+		return GS_CS_SRGB;
+
+	return thread_graphics->exports.gs_duplicator_get_color_space(
+		duplicator);
+}
+
+float gs_duplicator_get_sdr_white_level(gs_duplicator_t *duplicator)
+{
+	if (!gs_valid_p("gs_duplicator_get_sdr_white_level", duplicator))
+		return 80.f;
+	if (!thread_graphics->exports.gs_duplicator_get_sdr_white_level)
+		return 80.f;
+
+	return thread_graphics->exports.gs_duplicator_get_sdr_white_level(
+		duplicator);
 }
 
 /** creates a windows GDI-lockable texture */
